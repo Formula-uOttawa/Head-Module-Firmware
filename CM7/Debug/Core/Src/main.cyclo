@@ -1,0 +1,9 @@
+../Core/Src/main.c:106:5:main	7
+../Core/Src/main.c:194:6:SystemClock_Config	4
+../Core/Src/main.c:254:6:PeriphCommonClock_Config	2
+../Core/Src/main.c:281:13:MX_ETH_Init	2
+../Core/Src/main.c:330:13:MX_SPI1_Init	2
+../Core/Src/main.c:378:13:MX_UART4_Init	5
+../Core/Src/main.c:426:13:MX_GPIO_Init	1
+../Core/Src/main.c:450:6:MPU_Config	1
+../Core/Src/main.c:481:6:Error_Handler	1
