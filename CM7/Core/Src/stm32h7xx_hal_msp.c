@@ -63,34 +63,14 @@ void HAL_MspInit(void)
 {
 
   /* USER CODE BEGIN MspInit 0 */
+    HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
 
+    while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
   /* USER CODE END MspInit 0 */
-  PWREx_AVDTypeDef sConfigAVD = {0};
-  PWR_PVDTypeDef sConfigPVD = {0};
 
   __HAL_RCC_SYSCFG_CLK_ENABLE();
 
   /* System interrupt init*/
-
-  /** AVD Configuration
-  */
-  sConfigAVD.AVDLevel = PWR_AVDLEVEL_0;
-  sConfigAVD.Mode = PWR_AVD_MODE_NORMAL;
-  HAL_PWREx_ConfigAVD(&sConfigAVD);
-
-  /** Enable the AVD Output
-  */
-  HAL_PWREx_EnableAVD();
-
-  /** PVD Configuration
-  */
-  sConfigPVD.PVDLevel = PWR_PVDLEVEL_6;
-  sConfigPVD.Mode = PWR_PVD_MODE_NORMAL;
-  HAL_PWR_ConfigPVD(&sConfigPVD);
-
-  /** Enable the PVD Output
-  */
-  HAL_PWR_EnablePVD();
 
   /* USER CODE BEGIN MspInit 1 */
 
@@ -234,7 +214,6 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     /**SPI1 GPIO Configuration
     PD7     ------> SPI1_MOSI
     PG9     ------> SPI1_MISO
-    PG10     ------> SPI1_NSS
     PG11     ------> SPI1_SCK
     */
     GPIO_InitStruct.Pin = GPIO_PIN_7;
@@ -244,7 +223,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11;
+    GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -278,12 +257,11 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     /**SPI1 GPIO Configuration
     PD7     ------> SPI1_MOSI
     PG9     ------> SPI1_MISO
-    PG10     ------> SPI1_NSS
     PG11     ------> SPI1_SCK
     */
     HAL_GPIO_DeInit(GPIOD, GPIO_PIN_7);
 
-    HAL_GPIO_DeInit(GPIOG, GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11);
+    HAL_GPIO_DeInit(GPIOG, GPIO_PIN_9|GPIO_PIN_11);
 
     /* USER CODE BEGIN SPI1_MspDeInit 1 */
 
