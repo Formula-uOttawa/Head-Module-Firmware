@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAN-harness Config</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #6a7385; --line: #dde1e8;
+  --accent: #2a62d9; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030;
+  --pin-analog: #cfe0ff; --pin-digital: #d9f2dd; --pin-gnd: #e3e5ea; --pin-5v: #ffe1c7; --pin-tc: #f3d9f7; --pin-none: #f0f1f4;
+  --row-hover: #f1f4fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #98a1b3; --line: #2d3340;
+    --accent: #5b8cff; --accent-text: #0b1020; --ok: #4cc27f; --warn: #e0a84a; --bad: #ff7a7a;
+    --pin-analog: #27406e; --pin-digital: #24492f; --pin-gnd: #2a2f3a; --pin-5v: #5a3a1c; --pin-tc: #4b2d52; --pin-none: #20242d;
+    --row-hover: #232834;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #98a1b3; --line: #2d3340;
+  --accent: #5b8cff; --accent-text: #0b1020; --ok: #4cc27f; --warn: #e0a84a; --bad: #ff7a7a;
+  --pin-analog: #27406e; --pin-digital: #24492f; --pin-gnd: #2a2f3a; --pin-5v: #5a3a1c; --pin-tc: #4b2d52; --pin-none: #20242d;
+  --row-hover: #232834;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .path { color: var(--muted); font-size: 12px; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header .sp { flex: 1; }
+nav { display: flex; gap: 4px; padding: 8px 16px 0; overflow-x: auto; }
+nav button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--muted); font: inherit; cursor: pointer; white-space: nowrap; }
+nav button.on { color: var(--text); border-color: var(--accent); font-weight: 600; }
+main { padding: 12px 16px 48px; }
+button.btn, select, input { font: inherit; color: var(--text); }
+button.btn { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button.btn:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.icon { padding: 2px 7px; }
+input, select { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; min-width: 0; }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[disabled], select[disabled] { opacity: .5; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.toolbar .sp { flex: 1; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); }
+.tablewrap { overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; max-height: 70vh; }
+table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; }
+th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 12px; color: var(--muted); padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; z-index: 2; }
+td { padding: 3px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+tr:hover td { background: var(--row-hover); }
+td.stat { position: sticky; left: 0; background: var(--panel); z-index: 1; width: 28px; text-align: center; }
+tr.off td { opacity: .5; }
+td input[type=number] { width: 68px; } td input.w-s { width: 52px; } td input.w-m { width: 110px; } td input.w-l { width: 170px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
+.dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.issues { margin-top: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.issues li { margin: 3px 0; } .issues .e { color: var(--bad); } .issues .w { color: var(--warn); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 8px; font-size: 14px; }
+.conn-grid { display: grid; grid-template-columns: repeat(17, minmax(34px, 1fr)); gap: 4px; }
+.pin { border: 1px solid var(--line); border-radius: 6px; padding: 3px 2px; text-align: center; font-size: 11px; min-height: 48px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.pin b { font-size: 12px; } .pin span { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin.analog, .pin.analog_tc_neg { background: var(--pin-analog); } .pin.digital { background: var(--pin-digital); }
+.pin.gnd { background: var(--pin-gnd); } .pin.\35 v { background: var(--pin-5v); } .pin.tc_neg { background: var(--pin-tc); } .pin.none { background: var(--pin-none); }
+.pin.used { outline: 2px solid var(--accent); outline-offset: -1px; } .pin.click { cursor: pointer; }
+.picker { min-width: 78px; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; cursor: pointer; font: inherit; color: var(--text); }
+.picker[disabled] { opacity: .5; cursor: default; }
+.picker small, .pmenu small { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.pmenu { position: fixed; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.25); max-height: 280px; overflow: auto; min-width: 150px; padding: 3px; }
+.pmenu button { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 4px 8px; color: var(--text); font: inherit; cursor: pointer; }
+.pmenu button:hover, .pmenu button.on { background: var(--row-hover); }
+.pmenu button.used { opacity: .55; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; border: 1px solid var(--line); }
+.bytes { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; max-width: 640px; }
+.bytes div { height: 24px; font-size: 10px; display: flex; align-items: center; justify-content: center; border-radius: 3px; border: 1px solid var(--line); color: #10131a; }
+.bytes div.ts { background: var(--pin-gnd); color: var(--muted); } .bytes div.free { background: var(--panel); color: var(--muted); }
+.bytes div.beyond { opacity: .25; background: var(--panel); color: var(--muted); }
+.bar { height: 10px; background: var(--pin-none); border-radius: 5px; overflow: hidden; max-width: 420px; }
+.bar > div { height: 100%; background: var(--ok); } .bar.warn > div { background: var(--warn); } .bar.bad > div { background: var(--bad); }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.cols { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+@media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+.list button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 6px 8px; color: var(--text); cursor: pointer; font: inherit; }
+.list button.on { background: var(--row-hover); font-weight: 600; }
+.form { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: center; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; max-width: min(720px, 94vw); }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+textarea { width: 100%; min-height: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-family: ui-monospace, Menlo, monospace; }
+.muted { color: var(--muted); }
+svg text { fill: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CAN-harness Config</h1>
+  <span class="path" id="path"></span>
+  <span class="sp"></span>
+  <span class="chip" id="issueChip"></span>
+  <span class="chip" id="saveChip"></span>
+  <button class="btn primary" id="genBtn">Generate</button>
+</header>
+<nav id="nav"></nav>
+<main id="view"></main>
+<dialog id="dlg"></dialog>
+
+<script>
+"use strict";
+// ---------- state ----------
+let P = null, HW = null, A = { issues: [], frames: [], bus_load: 0 };
+let tab = "channels", hubFilter = "all", search = "", selCal = null, selRx = 0;
+const TABS = [["channels", "Channels"], ["rx", "CAN receive"], ["connectors", "Connectors"], ["frames", "Frames & bus load"], ["calibration", "Calibration"], ["system", "Hubs & settings"]];
+const TYPES = ["resistive", "active", "thermocouple", "digital"];
+
+// ---------- helpers ----------
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  let value;
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v;
+    else if (k === "value") value = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, "");
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
+  if (value !== undefined) e.value = value ?? "";
+  return e;
+}
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error("request failed"), { detail: j.detail });
+  return j;
+}
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const hex = (n, d = 8) => "0x" + n.toString(16).toUpperCase().padStart(d, "0");
+const num = v => v === "" || v == null ? null : Number(v);
+const hubName = id => (P.hubs.find(x => x.hub_id === id) || {}).name || `Hub ${id}`;
+const chColor = id => `hsl(${(id * 47) % 360} 60% 68%)`;
+function idBits(id) {
+  const b = id.toString(2).padStart(29, "0");
+  return [b.slice(0, 2), b.slice(2, 5), b.slice(5, 8), b.slice(8, 13), b.slice(13, 21), b.slice(21)].join(" ");
+}
+
+// ---------- persistence / analysis ----------
+function setSave(s) { const c = document.getElementById("saveChip"); c.textContent = s; c.className = "chip " + (s === "Saved" ? "ok" : s === "Save failed" ? "bad" : "warn"); }
+const save = debounce(async () => {
+  try { await api("PUT", "/api/project", P); setSave("Saved"); } catch (e) { setSave("Save failed"); }
+}, 500);
+const analyze = debounce(async () => {
+  try { A = await api("POST", "/api/analyze", P); } catch (e) { return; }
+  updateStatus();
+  if (tab === "frames") renderView();
+}, 150);
+function changed(structural) {
+  setSave("Unsaved"); save(); analyze();
+  if (structural) render();
+}
+function issuesFor(ch) { return A.issues.filter(i => i.where === ch.short_name); }
+function updateStatus() {
+  const e = A.issues.filter(i => i.level === "error").length, w = A.issues.length - e;
+  const c = document.getElementById("issueChip");
+  c.textContent = e ? `${e} error${e > 1 ? "s" : ""}` + (w ? `, ${w} warning${w > 1 ? "s" : ""}` : "") : w ? `${w} warning${w > 1 ? "s" : ""}` : "No issues";
+  c.className = "chip " + (e ? "bad" : w ? "warn" : "ok");
+  document.querySelectorAll("[data-sn]").forEach(el => {
+    const ch = P.channels.find(x => x.channel_id === +el.dataset.cid); if (!ch) return;
+    const is = issuesFor(ch);
+    el.className = "dot" + (is.some(i => i.level === "error") ? " bad" : is.length ? " warn" : "");
+    el.title = is.length ? is.map(i => i.message).join("\n") : "OK";
+  });
+  const box = document.getElementById("issueBox"); if (box) box.replaceWith(issueBox());
+}
+function issueBox() {
+  const list = A.issues;
+  return h("div", { class: "issues", id: "issueBox" }, list.length
+    ? h("ul", { style: "margin:0;padding-left:18px" }, list.map(i => h("li", { class: i.level[0] }, `[${i.where}] ${i.message}`)))
+    : h("span", { class: "muted" }, "No validation issues."));
+}
+
+// ---------- channels tab ----------
+function newChannel(over = {}) {
+  const id = Math.max(0, ...P.channels.map(c => c.channel_id)) + 1;
+  const hub = "hub" in over ? over.hub : (hubFilter !== "all" ? +hubFilter : (P.hubs[0] || {}).hub_id ?? 0);
+  return Object.assign({
+    channel_id: id, name: "New channel", short_name: `CH${id}`, source: "hub", hub, sensor_type: "active", sample_rate_hz: 100,
+    units: "", scaling: { gain: 1, offset: 0 }, fault_low: null, fault_high: null, pin_sig_pos: null, pin_sig_neg: null,
+    pin_5v: null, pin_gnd: null, pin_gnd_connector: 2, cal_x: [], cal_y: [], raw_bytes: 2, signed: false,
+    frame_idx: null, byte_offset: null, enabled: true, notes: "",
+  }, over);
+}
+function freePin(hub, type) {
+  const used = new Set(P.channels.filter(c => c.hub === hub && c.pin_sig_pos != null).map(c => c.pin_sig_pos));
+  return HW.conn1.find(p => !used.has(p.pin) && (type === "digital" ? p.role === "digital" : p.role === "analog"))?.pin ?? null;
+}
+function pinChoices(ch) {
+  const used = new Set(P.channels.filter(c => c !== ch && c.hub === ch.hub && c.pin_sig_pos != null).map(c => c.pin_sig_pos));
+  const ok = p => ch.sensor_type === "digital" ? p.role === "digital"
+    : ch.sensor_type === "thermocouple" ? p.afe === "B" && p.index <= 5 && p.pin !== 20
+    : p.role === "analog" || p.role === "analog_tc_neg";
+  return HW.conn1.filter(ok).map(p => ({ pin: p.pin, sub: p.afe ? `AFE ${p.afe}${p.index}` : `DIN${p.index}`, used: used.has(p.pin) }));
+}
+// Pin picker: pin number is the name, the AFE input is small grey text. Custom menu (a <select> can't style part of an option).
+let openMenu = null;
+function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+document.addEventListener("click", closeMenu);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
+window.addEventListener("scroll", e => { if (!(openMenu && openMenu.contains(e.target))) closeMenu(); }, true);
+function pinPicker(current, choices, onPick, disabled) {
+  const sel = choices.find(c => c.pin === current);
+  const btn = h("button", { class: "picker", disabled, type: "button", onclick: e => {
+    e.stopPropagation(); const wasOpen = openMenu && openMenu._owner === btn; closeMenu(); if (wasOpen) return;
+    const pick = pin => { closeMenu(); onPick(pin); };
+    const r = btn.getBoundingClientRect(), m = h("div", { class: "pmenu", onclick: ev => ev.stopPropagation() },
+      h("button", { onclick: () => pick(null) }, "—"),
+      choices.map(c => h("button", { class: (c.pin === current ? "on " : "") + (c.used ? "used" : ""), onclick: () => pick(c.pin) }, h("b", {}, c.pin), h("small", {}, c.sub + (c.used ? " · used" : "")))));
+    m.style.left = Math.min(r.left, window.innerWidth - 170) + "px";
+    m.style.top = (r.bottom + 2 + 280 > window.innerHeight ? Math.max(4, r.top - 282) : r.bottom + 2) + "px";
+    m._owner = btn; document.body.append(m); openMenu = m;
+  } }, current == null ? h("span", { class: "muted" }, "—") : [h("b", {}, current), sel ? h("small", {}, sel.sub) : null]);
+  return btn;
+}
+
+function cellInput(ch, key, o = {}) {
+  const el = h("input", { type: o.text ? "text" : "number", step: o.step ?? "any", class: o.cls || "", value: ch[key] ?? "", disabled: o.disabled,
+    onchange: e => { ch[key] = o.text ? e.target.value : (o.int ? (num(e.target.value) == null ? null : Math.round(num(e.target.value))) : num(e.target.value)); changed(!!o.structural); } });
+  return el;
+}
+function cellSelect(ch, key, opts, o = {}) {
+  return h("select", { value: ch[key] ?? "", disabled: o.disabled,
+    onchange: e => { const v = e.target.value; ch[key] = v === "" ? null : (o.str ? v : Number(v)); if (o.after) o.after(ch); changed(true); } },
+    h("option", { value: "" }, "—"), opts);
+}
+function channelRow(ch) {
+  const isHub = ch.source === "hub";
+  const tr = h("tr", { class: ch.enabled ? "" : "off" },
+    h("td", { class: "stat" }, h("span", { class: "dot", "data-sn": 1, "data-cid": ch.channel_id })),
+    h("td", {}, h("input", { type: "checkbox", checked: ch.enabled, onchange: e => { ch.enabled = e.target.checked; changed(true); } })),
+    h("td", {}, ch.channel_id),
+    h("td", {}, cellInput(ch, "name", { text: true, cls: "w-l" })),
+    h("td", {}, cellInput(ch, "short_name", { text: true, cls: "w-m", structural: true })),
+    h("td", {}, h("select", { value: ch.hub ?? "", disabled: !isHub, onchange: e => { ch.hub = +e.target.value; changed(true); } },
+      P.hubs.map(x => h("option", { value: x.hub_id }, `${x.hub_id} · ${x.name}`)))),
+    h("td", {}, h("select", { value: ch.sensor_type, disabled: !isHub, onchange: e => {
+        ch.sensor_type = e.target.value;
+        if (ch.sensor_type === "thermocouple") { ch.pin_sig_neg = 20; ch.pin_sig_pos = null; } else ch.pin_sig_neg = null;
+        if (ch.sensor_type === "digital") ch.pin_sig_pos = freePin(ch.hub, "digital");
+        changed(true); } }, (isHub ? TYPES : ["can"]).map(t => h("option", { value: t }, t)))),
+    h("td", {}, h("select", { value: ch.sample_rate_hz, onchange: e => { ch.sample_rate_hz = +e.target.value; changed(false); } },
+      HW.rate_codes.map(r => h("option", { value: r }, `${r} Hz`)))),
+    h("td", {}, cellInput(ch, "units", { text: true, cls: "w-s" })),
+    h("td", {}, pinPicker(ch.pin_sig_pos, pinChoices(ch), pin => { ch.pin_sig_pos = pin; changed(true); }, !isHub)),
+    h("td", {}, ch.sensor_type === "thermocouple"
+      ? pinPicker(ch.pin_sig_neg, HW.tc_neg_pins.map(p => ({ pin: p, sub: "TC−", used: false })), pin => { ch.pin_sig_neg = pin; changed(true); }, false)
+      : h("span", { class: "muted" }, "GND")),
+    h("td", {}, cellSelect(ch, "pin_5v", Array.from({ length: 17 }, (_, i) => h("option", { value: i + 1 }, `C2-${i + 1}`)))),
+    h("td", {}, h("select", { value: ch.pin_gnd == null ? "" : `${ch.pin_gnd_connector}:${ch.pin_gnd}`, onchange: e => {
+        const v = e.target.value; if (!v) ch.pin_gnd = null; else { const [c, p] = v.split(":"); ch.pin_gnd_connector = +c; ch.pin_gnd = +p; } changed(false); } },
+      h("option", { value: "" }, "—"),
+      [[1, [25, 30, 31, 32, 33, 34]], [2, Array.from({ length: 17 }, (_, i) => i + 18)]].flatMap(([c, ps]) => ps.map(p => h("option", { value: `${c}:${p}` }, `C${c}-${p}`))))),
+    h("td", {}, h("select", { value: ch.raw_bytes, disabled: !isHub, onchange: e => { ch.raw_bytes = +e.target.value; changed(false); } }, [1, 2, 3, 4].map(n => h("option", { value: n }, n)))),
+    h("td", {}, cellInput(ch, "frame_idx", { int: true, cls: "w-s", disabled: !isHub })),
+    h("td", {}, cellInput(ch, "byte_offset", { int: true, cls: "w-s", disabled: !isHub })),
+    h("td", {}, cellInput(ch, "fault_low")),
+    h("td", {}, cellInput(ch, "fault_high")),
+    h("td", {},
+      h("button", { class: "btn icon", title: "Calibration", onclick: () => { selCal = ch.channel_id; tab = "calibration"; render(); } }, "∿"), " ",
+      h("button", { class: "btn icon", title: "Duplicate", onclick: () => {
+        const c = newChannel(JSON.parse(JSON.stringify({ ...ch, pin_sig_pos: null })));
+        if (ch.source === "can_rx") { alert("Duplicate CAN receive signals from the CAN receive tab"); return; }
+        const id = Math.max(...P.channels.map(x => x.channel_id)) + 1;
+        c.channel_id = id; c.short_name = `${ch.short_name}_copy${id}`; c.name = `${ch.name} (copy)`; c.pin_sig_pos = freePin(ch.hub, ch.sensor_type === "digital" ? "digital" : "analog");
+        c.frame_idx = null; c.byte_offset = null;
+        P.channels.push(c); changed(true); } }, "⧉"), " ",
+      h("button", { class: "btn icon", title: "Delete", onclick: () => { if (confirm(`Delete channel "${ch.name}"?`)) { P.channels = P.channels.filter(x => x !== ch); changed(true); } } }, "✕")));
+  return tr;
+}
+function viewChannels() {
+  const cols = ["", "On", "ID", "Name", "Short name", "Hub", "Type", "Rate", "Units", "Sig +", "Sig −", "5V", "GND", "Bytes", "Frame", "Offset", "Fault low", "Fault high", ""];
+  const rows = P.channels.filter(c => (hubFilter === "all" || String(c.hub) === hubFilter)
+    && (!search || (c.name + c.short_name).toLowerCase().includes(search.toLowerCase())));
+  return h("div", {},
+    h("div", { class: "toolbar" },
+      h("select", { value: hubFilter, onchange: e => { hubFilter = e.target.value; render(); } },
+        h("option", { value: "all" }, "All hubs"), P.hubs.map(x => h("option", { value: x.hub_id }, `${x.hub_id} · ${x.name}`))),
+      h("input", { type: "search", placeholder: "Search channels", value: search, oninput: e => { search = e.target.value; clearTimeout(window._st); window._st = setTimeout(() => { render(); const i = document.querySelector("input[type=search]"); i.focus(); i.setSelectionRange(99, 99); }, 250); } }),
+      h("span", { class: "sp" }),
+      h("span", { class: "muted" }, `${rows.length} of ${P.channels.length} channels`),
+      h("button", { class: "btn primary", onclick: () => {
+        const c = newChannel(); c.pin_sig_pos = freePin(c.hub, "analog"); P.channels.push(c); changed(true); } }, "+ Add channel")),
+    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, cols.map(c => h("th", {}, c)))), h("tbody", {}, rows.map(channelRow)))),
+    h("p", { class: "muted" }, "Frame / Offset are optional: leave empty to auto-pack as tightly as possible (up to 64 B per frame). Thermocouples: AFE B only, Sig − is the shared TC− input (pins 20, 26–29)."),
+    issueBox());
+}
+
+// ---------- connectors tab ----------
+function viewConnectors() {
+  const hubId = hubFilter === "all" ? (P.hubs[0] || {}).hub_id : +hubFilter;
+  const chans = P.channels.filter(c => c.hub === hubId);
+  const bySig = new Map(chans.filter(c => c.pin_sig_pos != null).map(c => [c.pin_sig_pos, c]));
+  const roleLabel = { analog: "analog in", analog_tc_neg: "analog / TC−", digital: "digital in", gnd: "GND", tc_neg: "TC− (tied to 20)", none: "" };
+  const conn1 = HW.conn1.map(p => {
+    const ch = bySig.get(p.pin), tcUsers = p.role.includes("tc_neg") ? chans.filter(c => c.sensor_type === "thermocouple") : [];
+    const free = !ch && (p.role === "analog" || p.role === "digital" || p.role === "analog_tc_neg");
+    const label = ch ? ch.short_name : tcUsers.length ? `TC− ×${tcUsers.length}` : "";
+    return h("div", { class: `pin ${p.role}${ch || tcUsers.length ? " used" : ""}${ch || free ? " click" : ""}`,
+      title: `Pin ${p.pin}: ${roleLabel[p.role]}${p.afe ? ` (AFE ${p.afe}, index ${p.index})` : ""}${ch ? `\n${ch.name}` : ""}`,
+      onclick: () => {
+        if (ch) { search = ch.short_name; tab = "channels"; render(); }
+        else if (free) { const c = newChannel({ hub: hubId, pin_sig_pos: p.pin, sensor_type: p.role === "digital" ? "digital" : "active" }); P.channels.push(c); changed(false); selCal = null; tab = "channels"; search = c.short_name; render(); }
+      } }, h("b", {}, p.pin), h("span", {}, label || roleLabel[p.role]));
+  });
+  const fiveV = new Map(), gnd2 = new Map(), gnd1 = new Map();
+  for (const c of chans) {
+    if (c.pin_5v != null) (fiveV.get(c.pin_5v) || fiveV.set(c.pin_5v, []).get(c.pin_5v)).push(c.short_name);
+    if (c.pin_gnd != null) { const m = c.pin_gnd_connector === 1 ? gnd1 : gnd2; (m.get(c.pin_gnd) || m.set(c.pin_gnd, []).get(c.pin_gnd)).push(c.short_name); }
+  }
+  const conn2 = HW.conn2.map(p => {
+    const users = p.role === "5v" ? fiveV.get(p.pin) : gnd2.get(p.pin);
+    return h("div", { class: `pin ${p.role}${users ? " used" : ""}`, title: `Connector 2 pin ${p.pin}: ${p.role === "5v" ? "5V supply" : "GND"}${users ? "\n" + users.join(", ") : ""}` },
+      h("b", {}, p.pin), h("span", {}, users ? users.length > 1 ? `×${users.length}` : users[0] : p.role === "5v" ? "5V" : "GND"));
+  });
+  const conn1gnd = [...gnd1.keys()];
+  return h("div", {},
+    h("div", { class: "toolbar" },
+      h("select", { value: hubId, onchange: e => { hubFilter = e.target.value; render(); } }, P.hubs.map(x => h("option", { value: x.hub_id }, `${x.hub_id} · ${x.name}`))),
+      h("span", { class: "muted" }, "Click a free input to add a channel on it, or a used pin to jump to its channel.")),
+    h("div", { class: "card" }, h("h3", {}, "Connector 1 — sensor inputs"), h("div", { class: "conn-grid" }, conn1),
+      conn1gnd.length ? h("p", { class: "muted" }, `GND taken from connector 1 pins: ${conn1gnd.join(", ")} (info only)`) : null),
+    h("div", { class: "card" }, h("h3", {}, "Connector 2 — 5V (1–17) and GND (18–34), info only"), h("div", { class: "conn-grid" }, conn2)),
+    h("div", { class: "legend" }, [["analog", "analog input"], ["digital", "digital input"], ["tc_neg", "shared TC−"], ["gnd", "GND"], ["5v", "5V"]].map(([c, t]) =>
+      h("span", {}, h("i", { style: `background:var(--pin-${c === "5v" ? "5v" : c})` }), t))));
+}
+
+// ---------- frames tab ----------
+function viewFrames() {
+  const pct = A.bus_load * 100, cls = pct > 80 ? "bad" : pct > 60 ? "warn" : "";
+  const frames = A.frames.filter(f => hubFilter === "all" || String(f.hub) === hubFilter);
+  return h("div", {},
+    h("div", { class: "toolbar" },
+      h("select", { value: hubFilter, onchange: e => { hubFilter = e.target.value; render(); } }, h("option", { value: "all" }, "All hubs"), P.hubs.map(x => h("option", { value: x.hub_id }, `${x.hub_id} · ${x.name}`)))),
+    h("div", { class: "card", id: "busLoad" }, h("h3", {}, `Hub bus load (estimate): ${pct.toFixed(1)}%`),
+      h("div", { class: `bar ${cls}` }, h("div", { style: `width:${Math.min(100, pct)}%` })),
+      h("p", { class: "muted" }, `All hubs, ${(A.bus_nominal_bps / 1e3).toFixed(0)} kbit/s nominal, ${(A.bus_data_bps / 1e6).toFixed(1)} Mbit/s data phase, FD+BRS, extended IDs, ~10% stuffing allowance.`),
+      Object.entries(A.ext_loads || {}).map(([id, l]) => h("p", {}, `External bus ${id}: ${(l * 100).toFixed(1)}% (classic CAN estimate)`))),
+    frames.length ? frames.map(f => {
+      const cells = Array.from({ length: 64 }, (_, i) => {
+        const p = f.placements.find(p => i >= p.offset && i < p.offset + p.length);
+        if (i < 4) return h("div", { class: "ts", title: "Timestamp (ms, uint32)" }, i);
+        if (p) return h("div", { style: `background:${chColor(p.channel_id)}`, title: `${p.short_name} (offset ${p.offset}, ${p.length} B)` }, i);
+        return h("div", { class: i < f.dlc_bytes ? "free" : "beyond", title: i < f.dlc_bytes ? "unused (padding)" : "beyond DLC" }, i);
+      });
+      const used = f.placements.reduce((s, p) => s + p.length, 0);
+      return h("div", { class: "card" },
+        h("h3", {}, `${hubName(f.hub)} · ${f.rate_hz} Hz · frame ${f.frame_idx}`),
+        h("div", { class: "mono" }, `ID base ${hex(f.id_base)}  ${idBits(f.id_base)}`),
+        h("div", { class: "muted", style: "margin:4px 0 8px" }, `${f.placements.length} signals, payload ${f.payload_bytes} B → DLC ${f.dlc_bytes} B, ${used + 4} of ${f.dlc_bytes} B used`),
+        h("div", { class: "bytes" }, cells),
+        h("div", { class: "legend" }, f.placements.map(p => h("span", {}, h("i", { style: `background:${chColor(p.channel_id)}` }), `${p.short_name} @${p.offset}`))));
+    }) : h("p", { class: "muted" }, "No frames: add channels first."),
+    issueBox());
+}
+
+// ---------- calibration tab ----------
+function evalCal(ch, x) {
+  const xs = ch.cal_x, ys = ch.cal_y;
+  if (xs.length >= 2 && xs.length === ys.length) {
+    let i = 1; while (i < xs.length - 1 && x > xs[i]) i++;
+    return ys[i - 1] + (ys[i] - ys[i - 1]) * (x - xs[i - 1]) / (xs[i] - xs[i - 1]);
+  }
+  return x * ch.scaling.gain + ch.scaling.offset;
+}
+function plot(ch) {
+  const W = 520, H = 300, m = 40, xs = ch.cal_x, ys = ch.cal_y;
+  if (xs.length < 2) return h("p", { class: "muted" }, "Add at least two points to see the curve (otherwise gain/offset is used).");
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sx = x => m + (x - x0) / ((x1 - x0) || 1) * (W - 2 * m), sy = y => H - m - (y - y0) / ((y1 - y0) || 1) * (H - 2 * m);
+  const ns = "http://www.w3.org/2000/svg", mk = (t, a, txt) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; return e; };
+  const svg = mk("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", style: "max-width:520px" });
+  svg.append(mk("rect", { x: m, y: m / 2, width: W - 2 * m, height: H - 1.5 * m, fill: "none", stroke: "var(--line)" }));
+  for (let i = 0; i <= 4; i++) {
+    const xv = x0 + (x1 - x0) * i / 4, yv = y0 + (y1 - y0) * i / 4;
+    svg.append(mk("text", { x: sx(xv), y: H - m + 14, "text-anchor": "middle" }, +xv.toPrecision(4)), mk("text", { x: m - 4, y: sy(yv) + 4, "text-anchor": "end" }, +yv.toPrecision(4)));
+  }
+  svg.append(mk("polyline", { points: xs.map((x, i) => `${sx(x)},${sy(ys[i])}`).join(" "), fill: "none", stroke: "var(--accent)", "stroke-width": 2 }));
+  xs.forEach((x, i) => svg.append(mk("circle", { cx: sx(x), cy: sy(ys[i]), r: 3.5, fill: "var(--accent)" })));
+  return svg;
+}
+function viewCalibration() {
+  if (!P.channels.length) return h("p", { class: "muted" }, "No channels yet.");
+  const ch = P.channels.find(c => c.channel_id === selCal) || P.channels[0]; selCal = ch.channel_id;
+  const pts = () => ch.cal_x.map((x, i) => h("tr", {},
+    h("td", {}, h("input", { type: "number", step: "any", value: x, onchange: e => { ch.cal_x[i] = Number(e.target.value); changed(true); } })),
+    h("td", {}, h("input", { type: "number", step: "any", value: ch.cal_y[i], onchange: e => { ch.cal_y[i] = Number(e.target.value); changed(true); } })),
+    h("td", {}, h("button", { class: "btn icon", onclick: () => { ch.cal_x.splice(i, 1); ch.cal_y.splice(i, 1); changed(true); } }, "✕"))));
+  const out = h("span", { class: "mono" }, "—");
+  const tin = h("input", { type: "number", step: "any", placeholder: "raw value", oninput: e => { out.textContent = e.target.value === "" ? "—" : `${+evalCal(ch, Number(e.target.value)).toPrecision(6)} ${ch.units}`; } });
+  return h("div", { class: "cols" },
+    h("div", { class: "card list" }, P.channels.map(c => h("button", { class: c === ch ? "on" : "", onclick: () => { selCal = c.channel_id; render(); } }, c.name, h("span", { class: "muted" }, c.cal_x.length ? `  (${c.cal_x.length} pts)` : "")))),
+    h("div", {},
+      h("div", { class: "card" }, h("h3", {}, `${ch.name} — scaling`),
+        h("div", { class: "form" },
+          "Units", h("input", { value: ch.units, onchange: e => { ch.units = e.target.value; changed(false); } }),
+          "Gain", h("input", { type: "number", step: "any", value: ch.scaling.gain, onchange: e => { ch.scaling.gain = Number(e.target.value); changed(true); } }),
+          "Offset", h("input", { type: "number", step: "any", value: ch.scaling.offset, onchange: e => { ch.scaling.offset = Number(e.target.value); changed(true); } })),
+        h("p", { class: "muted" }, "eng = raw × gain + offset. The dash uses the calibration curve below instead when it has 2+ points.")),
+      h("div", { class: "card" }, h("h3", {}, "Calibration curve (raw → engineering, piecewise linear)"),
+        h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Raw X"), h("th", {}, `Eng Y${ch.units ? " (" + ch.units + ")" : ""}`), h("th", {}))), h("tbody", {}, pts())),
+        h("div", { class: "toolbar", style: "margin-top:8px" },
+          h("button", { class: "btn", onclick: () => { const l = ch.cal_x.length; ch.cal_x.push(l ? ch.cal_x[l - 1] + 1 : 0); ch.cal_y.push(l ? ch.cal_y[l - 1] : 0); changed(true); } }, "+ Point"),
+          h("button", { class: "btn", onclick: () => pasteDialog(ch) }, "Paste X,Y…"),
+          h("button", { class: "btn", disabled: ch.cal_x.length < 2, onclick: () => {
+            const n = ch.cal_x.length, sx = ch.cal_x.reduce((a, b) => a + b, 0), sy = ch.cal_y.reduce((a, b) => a + b, 0);
+            const sxy = ch.cal_x.reduce((a, x, i) => a + x * ch.cal_y[i], 0), sxx = ch.cal_x.reduce((a, x) => a + x * x, 0);
+            const g = (n * sxy - sx * sy) / (n * sxx - sx * sx); ch.scaling.gain = +g.toPrecision(8); ch.scaling.offset = +((sy - g * sx) / n).toPrecision(8); changed(true); } }, "Fit line → gain/offset"),
+          h("button", { class: "btn", onclick: () => { ch.cal_x = []; ch.cal_y = []; changed(true); } }, "Clear")),
+        plot(ch),
+        h("div", { class: "toolbar" }, "Test:", tin, "→", out))));
+}
+function pasteDialog(ch) {
+  const ta = h("textarea", { placeholder: "One 'x, y' pair per line (comma, tab or space separated)" });
+  const d = document.getElementById("dlg"); d.replaceChildren(h("h3", {}, "Paste calibration points"), ta,
+    h("div", { class: "toolbar", style: "margin-top:8px" }, h("span", { class: "sp" }),
+      h("button", { class: "btn", onclick: () => d.close() }, "Cancel"),
+      h("button", { class: "btn primary", onclick: () => {
+        const rows = ta.value.split(/\n/).map(l => l.trim().split(/[,\t ;]+/).map(Number)).filter(r => r.length >= 2 && r.every(Number.isFinite));
+        if (!rows.length) { alert("No valid x,y rows found"); return; }
+        ch.cal_x = rows.map(r => r[0]); ch.cal_y = rows.map(r => r[1]); d.close(); changed(true); } }, "Apply")));
+  d.showModal();
+}
+
+
+// ---------- CAN receive tab ----------
+const hexId = n => "0x" + Number(n).toString(16).toUpperCase();
+const parseId = t => { t = String(t).trim(); const v = /^0x/i.test(t) ? parseInt(t, 16) : Number(t); return Number.isFinite(v) ? v : 0; };
+function bitSpan(s) {
+  const bits = []; let pos = s.start_bit;
+  for (let i = 0; i < s.bit_length; i++) { bits.push(pos); pos = s.byte_order === "intel" ? pos + 1 : (pos % 8 ? pos - 1 : pos + 15); }
+  return bits;
+}
+function busesCard() {
+  const cell = (b, key, o = {}) => h("td", {}, h("input", { type: o.text ? "text" : "number", class: o.cls || "w-m", value: b[key] ?? "", onchange: e => { b[key] = o.text ? e.target.value : (e.target.value === "" ? null : Number(e.target.value)); changed(true); } }));
+  return h("div", { class: "card" }, h("h3", {}, "CAN buses on the head module"),
+    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["ID (C name)", "Name", "Role", "Type", "Bit rate", "Data rate", "Peripheral", "Std filters", "Ext filters", ""].map(c => h("th", {}, c)))),
+      h("tbody", {}, P.buses.map(b => h("tr", {},
+        cell(b, "id", { text: true, cls: "w-s" }), cell(b, "name", { text: true }),
+        h("td", {}, h("select", { value: b.role, onchange: e => { b.role = e.target.value; changed(true); } }, ["hub", "external"].map(r => h("option", { value: r }, r)))),
+        h("td", {}, h("select", { value: b.type, onchange: e => { b.type = e.target.value; changed(true); } }, ["can", "can_fd"].map(r => h("option", { value: r }, r)))),
+        cell(b, "bitrate"), cell(b, "data_bitrate"), cell(b, "head_peripheral", { text: true, cls: "w-s" }), cell(b, "std_filters", { cls: "w-s" }), cell(b, "ext_filters", { cls: "w-s" }),
+        h("td", {}, h("button", { class: "btn icon", onclick: () => { if (P.rx_frames.some(f => f.bus === b.id) && !confirm("Receive frames use this bus. Remove anyway?")) return; P.buses = P.buses.filter(x => x !== b); changed(true); } }, "✕"))))))),
+    h("p", { class: "muted" }, "Std/Ext filters = the FDCAN StdFiltersNbr / ExtFiltersNbr configured in CubeMX for that peripheral. Exactly one bus is the hub bus."),
+    h("button", { class: "btn", onclick: () => { let n = P.buses.length + 1; while (P.buses.some(b => b.id === `EXT${n}`)) n++; P.buses.push({ id: `EXT${n}`, name: `External CAN ${n}`, role: "external", type: "can", bitrate: 500000, data_bitrate: null, head_peripheral: "", std_filters: 16, ext_filters: 8 }); changed(true); } }, "+ Add bus"));
+}
+function viewRx() {
+  const ext = P.buses.filter(b => b.role === "external");
+  if (selRx >= P.rx_frames.length) selRx = Math.max(0, P.rx_frames.length - 1);
+  const f = P.rx_frames[selRx];
+  const list = h("div", { class: "card list" }, P.rx_frames.map((x, i) => h("button", { class: i === selRx ? "on" : "", onclick: () => { selRx = i; render(); } }, x.name, h("span", { class: "muted" }, `  ${x.bus} ${hexId(x.can_id)}`))),
+    h("button", { class: "btn", style: "margin-top:8px", onclick: () => {
+      P.rx_frames.push({ name: `frame_${P.rx_frames.length + 1}`, bus: ext[0]?.id || "", can_id: 0x100 + P.rx_frames.length, extended: false, id_mask: null, dlc: 8, rate_hz: 100, timeout_ms: 1000, mux_start_bit: null, mux_bit_length: null, signals: [] });
+      selRx = P.rx_frames.length - 1; changed(true); } }, "+ Frame"));
+  if (!f) return h("div", { class: "cols" }, list, h("p", { class: "muted" }, "Define receive frames for external CAN sensors (ECU, lambda, IMU…). The head decodes them and distributes the values like any hub channel."));
+  const fin = (key, o = {}) => h("input", { type: o.type || "number", class: o.cls || "", step: "any", value: o.fmt ? o.fmt(f[key]) : (f[key] ?? ""), onchange: e => {
+    f[key] = o.parse ? o.parse(e.target.value) : (e.target.value === "" ? null : Number(e.target.value)); changed(!!o.structural); } });
+  const chOf = s => P.channels.find(c => c.channel_id === s.channel_id) || { name: "?", short_name: "?", units: "" };
+  // bit map
+  const owner = new Map();
+  f.signals.forEach(sg => bitSpan(sg).forEach(b => owner.set(b, sg)));
+  const rows = [];
+  for (let byte = 0; byte < f.dlc; byte++) {
+    const cells = [h("span", { class: "muted mono", style: "width:2.2em;display:inline-block" }, byte)];
+    for (let bit = 7; bit >= 0; bit--) {
+      const sg = owner.get(byte * 8 + bit);
+      cells.push(h("span", { class: "mono", title: sg ? `${chOf(sg).short_name} (bit ${byte * 8 + bit})` : `bit ${byte * 8 + bit}`,
+        style: `display:inline-block;width:22px;height:20px;text-align:center;border:1px solid var(--line);margin:1px;border-radius:3px;font-size:10px;color:#10131a;${sg ? `background:${chColor(sg.channel_id)}` : "color:var(--muted)"}` }, bit));
+    }
+    rows.push(h("div", {}, cells));
+  }
+  const sigRow = (sg, idx) => {
+    const ch = chOf(sg), so = (key, o = {}) => h("input", { type: o.text ? "text" : "number", step: "any", class: o.cls || "w-s", value: o.t ? o.t(sg[key]) : (sg[key] ?? ""),
+      onchange: e => { sg[key] = e.target.value === "" ? (o.nullable ? null : 0) : (o.text ? e.target.value : Number(e.target.value)); changed(!!o.structural); } });
+    return h("tr", {},
+      h("td", {}, h("input", { class: "w-m", value: ch.name, onchange: e => { ch.name = e.target.value; changed(false); } })),
+      h("td", {}, h("input", { class: "w-m", value: ch.short_name, onchange: e => { ch.short_name = e.target.value; changed(false); } })),
+      h("td", {}, h("input", { class: "w-s", value: ch.units, onchange: e => { ch.units = e.target.value; changed(false); } })),
+      h("td", {}, so("start_bit", { structural: true })), h("td", {}, so("bit_length", { structural: true })),
+      h("td", {}, h("select", { value: sg.byte_order, onchange: e => { sg.byte_order = e.target.value; changed(true); } }, ["intel", "motorola"].map(o => h("option", { value: o }, o)))),
+      h("td", {}, h("input", { type: "checkbox", checked: sg.signed, onchange: e => { sg.signed = e.target.checked; changed(false); } })),
+      h("td", {}, h("input", { type: "checkbox", checked: sg.is_float, onchange: e => { sg.is_float = e.target.checked; if (sg.is_float) { sg.bit_length = 32; } changed(true); } })),
+      h("td", {}, so("multiplier")), h("td", {}, so("offset")), h("td", {}, so("mux_value", { nullable: true })),
+      h("td", {}, h("button", { class: "btn icon", title: "Remove signal and its channel", onclick: () => {
+        if (!confirm(`Remove signal "${ch.name}" and its channel?`)) return;
+        f.signals.splice(idx, 1); P.channels = P.channels.filter(c => c.channel_id !== sg.channel_id); changed(true); } }, "✕")));
+  };
+  return h("div", { class: "cols" }, list, h("div", {},
+    h("div", { class: "card" }, h("h3", {}, "Receive frame"),
+      h("div", { class: "form" },
+        "Name", fin("name", { type: "text", cls: "w-l" }),
+        "Bus", h("select", { value: f.bus, onchange: e => { f.bus = e.target.value; changed(true); } }, ext.map(b => h("option", { value: b.id }, `${b.id} · ${b.name} (${b.type})`))),
+        "CAN ID", fin("can_id", { type: "text", fmt: hexId, parse: parseId, structural: true }),
+        "Extended (29-bit) ID", h("input", { type: "checkbox", checked: f.extended, onchange: e => { f.extended = e.target.checked; changed(true); } }),
+        "ID mask (optional)", fin("id_mask", { type: "text", fmt: v => v == null ? "" : hexId(v), parse: v => v === "" ? null : parseId(v) }),
+        "DLC (bytes)", fin("dlc", { structural: true }), "Expected rate (Hz)", fin("rate_hz"), "Timeout (ms)", fin("timeout_ms"),
+        "Mux start bit", fin("mux_start_bit", { structural: true }), "Mux bit length", fin("mux_bit_length", { structural: true })),
+      h("div", { class: "toolbar", style: "margin-top:8px" }, h("span", { class: "sp" }),
+        h("button", { class: "btn", onclick: () => { if (confirm(`Delete frame "${f.name}" and its ${f.signals.length} channels?`)) {
+          const ids = new Set(f.signals.map(s => s.channel_id)); P.channels = P.channels.filter(c => !ids.has(c.channel_id)); P.rx_frames.splice(selRx, 1); changed(true); } } }, "Delete frame"))),
+    h("div", { class: "card" }, h("h3", {}, "Signals"),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Short name", "Units", "Start bit", "Bits", "Byte order", "Signed", "Float", "Multiplier", "Offset", "Mux value", ""].map(c => h("th", {}, c)))),
+        h("tbody", {}, f.signals.map(sigRow)))),
+      h("div", { class: "toolbar", style: "margin-top:8px" }, h("button", { class: "btn primary", onclick: () => {
+        const c = newChannel({ name: `${f.name} signal ${f.signals.length + 1}`, source: "can_rx", hub: null, sensor_type: "can", sample_rate_hz: f.rate_hz ? Math.round(f.rate_hz) : 100, pin_sig_pos: null });
+        c.short_name = `CAN${c.channel_id}`;
+        const used = new Set(f.signals.flatMap(bitSpan)); let start = 0; while (used.has(start)) start++;
+        P.channels.push(c); f.signals.push({ channel_id: c.channel_id, start_bit: start, bit_length: 8, byte_order: "intel", signed: false, is_float: false, multiplier: 1, offset: 0, mux_value: null });
+        changed(true); } }, "+ Signal"),
+        h("span", { class: "muted" }, "Intel: start bit is the LSB. Motorola (DBC): start bit is the MSB. Value = raw × multiplier + offset; the head distributes it as float.")),
+      h("div", { style: "margin-top:12px" }, h("div", { class: "muted", style: "margin-bottom:4px" }, "Payload bit map (byte rows, bit 7 → 0)"), rows)),
+    issueBox()));
+}
+
+// ---------- hubs & settings tab ----------
+function viewSystem() {
+  const s = P.settings;
+  const field = (label, key, o = {}) => [label, h("input", { type: o.text ? "text" : "number", value: s[key], onchange: e => { s[key] = o.text ? e.target.value : Number(e.target.value); changed(false); } })];
+  return h("div", {},
+    h("div", { class: "card" }, h("h3", {}, "Project"),
+      h("div", { class: "form" }, "Name", h("input", { value: P.name, onchange: e => { P.name = e.target.value; changed(false); } }))),
+    h("div", { class: "card" }, h("h3", {}, "Hubs"),
+      h("table", {}, h("thead", {}, h("tr", {}, ["Hub ID (0–7)", "Name", "Location", ""].map(c => h("th", {}, c)))),
+        h("tbody", {}, P.hubs.map(x => h("tr", {},
+          h("td", {}, h("input", { type: "number", min: 0, max: 7, value: x.hub_id, class: "w-s", onchange: e => { const old = x.hub_id, nu = Number(e.target.value); P.channels.forEach(c => { if (c.hub === old) c.hub = nu; }); x.hub_id = nu; changed(true); } })),
+          h("td", {}, h("input", { value: x.name, onchange: e => { x.name = e.target.value; changed(true); } })),
+          h("td", {}, h("input", { value: x.location, onchange: e => { x.location = e.target.value; changed(false); } })),
+          h("td", {}, h("button", { class: "btn icon", onclick: () => { if (P.channels.some(c => c.hub === x.hub_id) && !confirm("Channels still use this hub. Remove it anyway?")) return; P.hubs = P.hubs.filter(y => y !== x); changed(true); } }, "✕")))))),
+      h("button", { class: "btn", style: "margin-top:8px", onclick: () => {
+        const used = new Set(P.hubs.map(x => x.hub_id)); const id = [0, 1, 2, 3, 4, 5, 6, 7].find(i => !used.has(i));
+        if (id == null) { alert("All 8 hub IDs are in use"); return; } P.hubs.push({ hub_id: id, name: `Hub ${id}`, location: "" }); changed(true); } }, "+ Add hub")),
+    h("div", { class: "card" }, h("h3", {}, "Frame packing & bus"),
+      h("div", { class: "form" },
+        ...field("Data start byte (after timestamp)", "data_start"), ...field("Data end byte (exclusive, max 64)", "data_end"),
+        "Hub-supported rates (Hz)", h("input", { value: s.supported_rates_hz.join(", "), onchange: e => { s.supported_rates_hz = e.target.value.split(/[ ,]+/).map(Number).filter(Boolean); changed(false); } }))),
+    busesCard(),
+    h("div", { class: "card" }, h("h3", {}, "Dash UDP"), h("div", { class: "form" }, ...field("IP", "udp_ip", { text: true }), ...field("Port", "udp_port"))),
+    h("div", { class: "card" }, h("h3", {}, "Import"),
+      h("p", { class: "muted" }, "Replace the project with a legacy SensorHubV1 YAML (rear_sensor_config.yaml)."),
+      h("input", { type: "file", accept: ".yaml,.yml", onchange: async e => {
+        const f = e.target.files[0]; if (!f || !confirm("Replace the current project with this import?")) return;
+        try { P = await api("POST", "/api/import-legacy", { yaml: await f.text(), name: f.name.replace(/\.ya?ml$/, "") }); changed(true); } catch (err) { alert(err.detail || "Import failed"); } } })));
+}
+
+// ---------- generate ----------
+document.getElementById("genBtn").onclick = async () => {
+  const d = document.getElementById("dlg");
+  try {
+    const r = await api("POST", "/api/generate", P);
+    d.replaceChildren(h("h3", {}, "Generated"), h("ul", { class: "mono" }, r.files.map(f => h("li", {}, f))),
+      r.warnings.length ? h("p", { class: "muted" }, "Warnings:") : null, h("ul", {}, r.warnings.map(w => h("li", {}, w))),
+      h("div", { class: "toolbar" }, h("span", { class: "sp" }), h("button", { class: "btn primary", onclick: () => d.close() }, "Close")));
+  } catch (e) {
+    d.replaceChildren(h("h3", {}, "Cannot generate: fix these errors first"),
+      h("ul", {}, (Array.isArray(e.detail) ? e.detail : [JSON.stringify(e.detail)]).map(x => h("li", { class: "e", style: "color:var(--bad)" }, x))),
+      h("div", { class: "toolbar" }, h("span", { class: "sp" }), h("button", { class: "btn", onclick: () => d.close() }, "Close")));
+  }
+  d.showModal();
+};
+
+// ---------- shell ----------
+function render() { renderView(); updateStatus(); }
+function renderView() {
+  const nav = document.getElementById("nav");
+  nav.replaceChildren(...TABS.map(([k, t]) => h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; render(); } }, t)));
+  const v = { channels: viewChannels, rx: viewRx, connectors: viewConnectors, frames: viewFrames, calibration: viewCalibration, system: viewSystem }[tab]();
+  document.getElementById("view").replaceChildren(v);
+}
+(async function init() {
+  try {
+    HW = await api("GET", "/api/hw");
+    const r = await api("GET", "/api/project");
+    P = r.project; document.getElementById("path").textContent = r.path; setSave("Saved");
+    A = await api("POST", "/api/analyze", P);
+    render();
+  } catch (e) { document.getElementById("view").textContent = "Failed to load project: " + (e.message || e); }
+})();
+</script>
+</body>
+</html>
