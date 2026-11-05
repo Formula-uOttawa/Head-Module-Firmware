@@ -1,5 +1,7 @@
 #include "hframe.h"
 
+#include <stdbool.h>
+
 uint16_t Hframe_Crc16(const uint8_t *data, size_t len)
 {
     uint16_t crc = 0xFFFF;
@@ -90,6 +92,33 @@ void HframeRx_Init(HframeRx_t *rx, void (*on_msg)(void *, const uint8_t *, size_
     rx->ctx = ctx;
     rx->mode = 0;
     rx->n = 0;
+    rx->crc_fail = rx->overflow = rx->desync = 0;
+}
+
+void HframeRx_Reset(HframeRx_t *rx)
+{
+    if (rx->mode == 2 && rx->n)
+        rx->desync++;
+    rx->mode = 0;
+    rx->n = 0;
+}
+
+/* a 0x00 ended a binary frame body of rx->n bytes */
+static bool binary_frame_done(HframeRx_t *rx)
+{
+    uint8_t body[HFRAME_MAX_BODY];
+    int d = Hcobs_Decode(rx->buf, rx->n, body, sizeof body);
+    if (d < 4) {
+        rx->desync++;
+        return false;
+    }
+    if (Hframe_Crc16(body, (size_t)d - 2) != (uint16_t)(body[d - 2] | (body[d - 1] << 8))) {
+        rx->crc_fail++;
+        return false;
+    }
+    if (rx->on_msg)
+        rx->on_msg(rx->ctx, body, (size_t)d - 2);
+    return true;
 }
 
 void HframeRx_Feed(HframeRx_t *rx, uint8_t b)
@@ -97,19 +126,24 @@ void HframeRx_Feed(HframeRx_t *rx, uint8_t b)
     switch (rx->mode) {
     case 2: /* binary */
         if (b == 0) {
-            if (rx->n) {
-                uint8_t body[HFRAME_MAX_BODY];
-                int d = Hcobs_Decode(rx->buf, rx->n, body, sizeof body);
-                if (d >= 4 && Hframe_Crc16(body, (size_t)d - 2) == (uint16_t)(body[d - 2] | (body[d - 1] << 8)) && rx->on_msg)
-                    rx->on_msg(rx->ctx, body, (size_t)d - 2);
-            }
+            /* An empty body is a repeated delimiter / idle filler: stay here. A good frame returns to idle (so ASCII
+               lines work again). A bad frame stays in "binary, empty": its closing 0x00 may be the opening one of the
+               next frame, which is then received correctly. */
+            if (rx->n && binary_frame_done(rx))
+                rx->mode = 0;
             rx->n = 0;
-            rx->mode = 0;
         } else if (rx->n < sizeof rx->buf) {
             rx->buf[rx->n++] = b;
         } else {
+            rx->overflow++;
             rx->n = 0;
-            rx->mode = 0;
+            rx->mode = 3;
+        }
+        break;
+    case 3: /* oversized binary frame: skip the rest, the next 0x00 re-synchronises */
+        if (b == 0) {
+            rx->n = 0;
+            rx->mode = 2;
         }
         break;
     case 1: /* ASCII line */

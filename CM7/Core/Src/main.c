@@ -24,6 +24,8 @@
 /* USER CODE BEGIN Includes */
 #include "tcan.h"
 #include "head_link.h"
+#include "head_config.h"
+#include "head_debug.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,9 +35,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* Legacy UART debug prototype (DMA based, below) is superseded by head_link.c / head_debug.c: the ASCII commands now run
-   through the same UART link as the binary config protocol. Define this again only to revive the old prototype. */
-//#define DEF_DEBUG
 /* DUAL_CORE_BOOT_SYNC_SEQUENCE: Define for dual core boot synchronization    */
 /*                             demonstration code based on hardware semaphore */
 /* This define is present in both CM7/CM4 projects                            */
@@ -82,13 +81,7 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN PV */
-#define DEBUG_BUF_SIZE 128
 
-#ifdef DEF_DEBUG
-uint8_t dma_rx_buffer[DEBUG_BUF_SIZE];
-char command_buffer[DEBUG_BUF_SIZE];
-volatile uint8_t new_cmd_rdy = 0;
-#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,113 +98,6 @@ static void MX_UART4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#ifdef DEF_DEBUG
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size) {
-    if (huart->Instance == UART4) {
-        if (size >= DEBUG_BUF_SIZE) {
-            size = DEBUG_BUF_SIZE - 1;
-        }
-
-        // copy to parsing buffer
-        memcpy(command_buffer, dma_rx_buffer, size);
-
-        // add null terminator
-        command_buffer[size] = '\0';
-
-        // set flag
-        new_cmd_rdy = 1;
-
-        // listen for next command
-        HAL_UARTEx_ReceiveToIdle_DMA(&huart4, dma_rx_buffer, DEBUG_BUF_SIZE);
-        __HAL_DMA_DISABLE_IT(&hdma_usart4_rx, DMA_IT_HT);
-    }
-}
-void debugSendResponse(const char *resp) {
-    HAL_UART_Transmit(&huart4, (uint8_t*)resp, strlen(resp), 100);
-}
-static uint8_t hexCharToVal(char c) {
-    c = toupper(c);
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return 0;
-}
-size_t hexStringToBytes(const char *hex_string, uint8_t *out_buffer, size_t max_bytes) {
-    size_t len = strlen(hex_string);
-    size_t byte_count = 0;
-
-    // Ensure we have an even number of characters and don't overflow the buffer
-    for (size_t i = 0; i < len && byte_count < max_bytes; i += 2) {
-        if (hex_string[i] == '\0' || hex_string[i+1] == '\0') break; 
-        
-        uint8_t high_nibble = hexCharToVal(hex_string[i]);
-        uint8_t low_nibble  = hexCharToVal(hex_string[i+1]);
-        
-        out_buffer[byte_count++] = (high_nibble << 4) | low_nibble;
-    }
-    
-    return byte_count;
-}
-void processDebugCommand(void) {
-    uint32_t timestamp = HAL_GetTick();
-    char *tokens = strtok(command_buffer, ":");
-    
-    if (tokens == NULL) return;
-
-    char resp_buffer[DEBUG_BUF_SIZE];
-
-    if (strcmp(tokens, "ping") == 0) {
-        snprintf(resp_buffer, sizeof(resp_buffer), "ping:OK:%lu\r\n", timestamp);
-    } else if (strcmp(tokens, "send") == 0) {
-        char *target = strtok(NULL, ":");
-        if (strcmp(target, "fdcan") == 0) {
-            // send data on can bus
-        } else if (strcmp(target, "tcan") == 0) {
-            char *hex = strtok(NULL, ":");
-            // parse hex bytes from cmd
-            uint8_t str_bytes[2];
-            hexStringToBytes(hex, str_bytes, 2);
-
-            // write bus
-            TCANSpiWrite(str_bytes[0], str_bytes[1]);
-            // send ACK + response from bus
-            snprintf(resp_buffer, sizeof(resp_buffer), "send:OK:%lu:%u\r\n", timestamp, tcan_global_int);
-        } else if (strcmp(target, "afea") == 0) {
-
-        } else if (strcmp(target, "afeb") == 0) {
-
-        }
-    } else if (strcmp(tokens, "sniff") == 0) {
-        char *target = strtok(NULL, ":");
-        char *action = strtok(NULL, ":");
-        if (target == NULL || action == NULL) {
-            snprintf(resp_buffer, sizeof(resp_buffer), "sniff:ERR_BAD_ARGS:%lu\r\n", timestamp);
-        } else {
-            bool enable = (strcmp(action, "on") == 0 || strcmp(action, "ON") == 0);
-            if (strcmp(target, "tcan") == 0) {
-                sniff_tcan = enable;
-                snprintf(resp_buffer, sizeof(resp_buffer), "sniff:tcan:%s:%lu\r\n", enable?"ON":"OFF", timestamp);
-            } else if (strcmp(target, "afea") == 0) {
-                sniff_afeA = enable;
-                snprintf(resp_buffer, sizeof(resp_buffer), "sniff:afeA:%s:%lu\r\n", enable?"ON":"OFF", timestamp);
-            } else if (strcmp(target, "afeb") == 0) {
-                sniff_afeB = enable;
-                snprintf(resp_buffer, sizeof(resp_buffer), "sniff:afeB:%s:%lu\r\n", enable?"ON":"OFF", timestamp);
-            } else {
-                snprintf(resp_buffer, sizeof(resp_buffer), "sniff:ERR_BAD_TARGET:%lu\r\n", timestamp);
-            }
-        }
-    } else if (strcmp(tokens, "reset") == 0) {
-        snprintf(resp_buffer, sizeof(resp_buffer), "reset:OK:%lu\r\n", timestamp);
-        // send response before reset, since this will stop the MCU
-        debugSendResponse(resp_buffer); 
-        HAL_NVIC_SystemReset();
-        // handle reset cmd
-    } else {
-        snprintf(resp_buffer, sizeof(resp_buffer), "%s:ERR_BAD_CMD:%lu\r\n", tokens, timestamp);
-    }
-    debugSendResponse(resp_buffer);
-}
-#endif
 /* USER CODE END 0 */
 
 /**
@@ -289,12 +175,22 @@ Error_Handler();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
 
-    HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_SET);
-    HAL_Delay(2);
+    HeadLink_PinSwap(); /* first: the UART4 pads must stop contending with the ST-LINK as early as possible */
 
-    TCAN2410Init();
+    /* SBC bring-up (nCS high, watchdog off, normal mode) is the first thing after that: its standby watchdog is running.
+       Retried a few times; the result goes to INFO (tcan_init_status) and to the boot line below. */
+    bool tcan_ok = false;
+    unsigned tcan_tries = 0;
+    while (!tcan_ok && tcan_tries < HEAD_TCAN_INIT_TRIES)
+    {
+      tcan_ok = TCAN2410Init();
+      tcan_tries++;
+      if (!tcan_ok)
+        HAL_Delay(HEAD_TCAN_RETRY_DELAY_MS);
+    }
 
     HeadLink_Init(); /* UART4 config/debug protocol */
+    HeadDebug_BootReport(tcan_ok, tcan_tries);
   /* USER CODE END 2 */
 
   /* Infinite loop */

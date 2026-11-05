@@ -1,12 +1,13 @@
-/* head_debug.h - legacy ASCII debug commands (ping / send / sniff / reset), carried alongside the binary protocol. */
+/* head_debug.h - ASCII debug commands (ping / send:tcan / tcan:wd / reset), carried alongside the binary protocol. */
 #ifndef HEAD_DEBUG_H
 #define HEAD_DEBUG_H
 
 #include <stdbool.h>
 
-extern volatile bool sniff_tcan, sniff_afeA, sniff_afeB;
-
-/* One complete text line (no terminator). Replies are sent over the same link. */
+/* One complete text line (no terminator). Lines with non-printable bytes are ignored. Replies are sent over the same link. */
 void HeadDebug_HandleLine(const char *line);
 
-#endif
+/* Print the one-line boot report of the SBC bring-up ("boot:tcan:..."). */
+void HeadDebug_BootReport(bool tcan_ok, unsigned tries);
+
+#endif /* HEAD_DEBUG_H */

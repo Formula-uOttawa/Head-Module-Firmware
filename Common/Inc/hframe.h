@@ -22,12 +22,22 @@ typedef struct HframeRx {
     void (*on_msg)(void *ctx, const uint8_t *msg, size_t len);   /* msg = type seq payload (CRC already checked) */
     void (*on_line)(void *ctx, const char *line);                /* legacy ASCII debug line, no terminator */
     void *ctx;
-    uint8_t mode; /* 0 idle, 1 text, 2 binary */
+    uint8_t mode; /* 0 idle, 1 text, 2 binary, 3 binary overflow (discard until the next 0x00) */
     uint16_t n;
     uint8_t buf[HFRAME_MAX_ENCODED];
+    /* error counters since Init (wrap at 2^32) */
+    uint32_t crc_fail; /* delimited binary frames whose CRC-16 did not match */
+    uint32_t overflow; /* binary frames longer than the buffer */
+    uint32_t desync;   /* malformed COBS / too-short frames, and frames cut short by HframeRx_Reset */
 } HframeRx_t;
 
 void HframeRx_Init(HframeRx_t *rx, void (*on_msg)(void *, const uint8_t *, size_t), void (*on_line)(void *, const char *), void *ctx);
 void HframeRx_Feed(HframeRx_t *rx, uint8_t byte);
+/*
+ * Back to idle (a half-received frame is discarded). Link code calls this after ~50 ms without received bytes while
+ * a frame is in progress. After a bad frame the parser stays in "binary, empty" so the next 0x00-delimited frame is
+ * received correctly even when its leading delimiter was consumed as the previous frame's terminator.
+ */
+void HframeRx_Reset(HframeRx_t *rx);
 
 #endif

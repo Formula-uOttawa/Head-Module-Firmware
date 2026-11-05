@@ -6,12 +6,13 @@ void HeadDecode_Reset(HeadLive_t *live, HeadStats_t *stats)
 {
     for (uint32_t i = 0; i < HEAD_MAX_CHANNELS; i++) {
         live->values[i].u = 0;
-        live->last_rx_ms[i] = HEAD_NEVER_RX;
+        live->last_rx_ms[i] = 0;
+        live->rx_seen[i] = 0;
         live->stale[i] = 1;
     }
     if (stats) {
         memset((void *)stats, 0, sizeof *stats);
-        for (int i = 0; i < 8; i++)
+        for (uint32_t i = 0; i < HEAD_MAX_HUBS; i++)
             stats->hub_last_counter[i] = -1;
     }
 }
@@ -22,15 +23,30 @@ uint32_t HeadDecode_ExtractBits(const uint8_t *d, uint8_t len, uint16_t start, u
     uint16_t pos = start;
     for (uint8_t k = 0; k < n; k++) {
         uint32_t bit = (uint16_t)(pos >> 3) < len ? (uint32_t)((d[pos >> 3] >> (pos & 7)) & 1u) : 0u;
-        if (big_endian) {
+        if (big_endian)
             v = (v << 1) | bit;
-            pos = (pos & 7) ? (uint16_t)(pos - 1) : (uint16_t)(pos + 15);
-        } else {
+        else
             v |= bit << k;
-            pos++;
-        }
+        pos = HeadBits_Next(pos, big_endian);
     }
     return v;
+}
+
+bool HeadDecode_BitsInRange(uint8_t len, uint16_t start, uint8_t n, bool big_endian)
+{
+    uint16_t pos = start;
+    for (uint8_t k = 0; k < n; k++) {
+        if ((uint16_t)(pos >> 3) >= len)
+            return false;
+        pos = HeadBits_Next(pos, big_endian);
+    }
+    return true;
+}
+
+static void mark_rx(HeadLive_t *live, uint16_t slot, uint32_t now_ms)
+{
+    live->last_rx_ms[slot] = now_ms;
+    live->rx_seen[slot] = 1;
 }
 
 static bool process_hub(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *stats, uint32_t can_id,
@@ -43,20 +59,25 @@ static bool process_hub(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *
             continue;
         for (uint16_t r = 0; r < f->route_count; r++) {
             const HeadHubRoute_t *rt = &cfg->hub_routes[f->first_route + r];
+            if ((uint32_t)rt->offset + rt->length > len)
+                continue; /* never read past the received payload (Parse already guarantees offset + length <= min_len) */
             uint32_t v = 0;
             for (uint8_t b = 0; b < rt->length; b++)
                 v |= (uint32_t)data[rt->offset + b] << (8 * b);
             if (rt->is_signed && rt->length < 4 && (v & (1u << (8 * rt->length - 1))))
                 v |= ~0u << (8 * rt->length);
             live->values[rt->slot].u = v;
-            live->last_rx_ms[rt->slot] = now_ms;
+            mark_rx(live, rt->slot, now_ms);
         }
-        if (stats && !handled) { /* frame counter (ID bits 13-20 in the spreadsheet numbering = ID bits 15..8) */
+        if (stats && !handled) { /* frame counter: ID bits 15..8, one 8-bit counter per hub that steps once per transmitted frame */
             uint8_t hub = f->hub;
             int16_t counter = (int16_t)((can_id >> 8) & 0xFF);
             int16_t last = stats->hub_last_counter[hub];
-            if (last >= 0)
-                stats->hub_lost[hub] += (uint32_t)((counter - last - 1) & 0xFF);
+            if (last >= 0) {
+                uint32_t delta = (uint32_t)(counter - last) & 0xFFu;
+                if (delta != 0) /* delta 0 = the same counter again (duplicate / retransmit): nothing was lost */
+                    stats->hub_lost[hub] += delta - 1u;
+            }
             stats->hub_last_counter[hub] = counter;
         }
         handled = true;
@@ -73,12 +94,20 @@ static bool process_rx(const HeadConfig_t *cfg, HeadLive_t *live, uint8_t bus, u
         if (f->bus != bus || (bool)f->extended != extended || (can_id & f->id_mask) != (f->can_id & f->id_mask))
             continue;
         int32_t mux = -1;
-        if (f->mux_enabled)
+        if (f->mux_enabled) {
+            if (!HeadDecode_BitsInRange(len, f->mux_start_bit, f->mux_bit_length, false))
+                continue; /* too short to even hold the multiplexer: not a usable frame */
             mux = (int32_t)HeadDecode_ExtractBits(data, len, f->mux_start_bit, f->mux_bit_length, false);
+        }
+        uint16_t decoded = 0, skipped = 0;
         for (uint16_t s = 0; s < f->signal_count; s++) {
             const HeadRxSignal_t *sg = &cfg->rx_signals[f->first_signal + s];
             if (sg->mux_value >= 0 && sg->mux_value != mux)
                 continue;
+            if (!HeadDecode_BitsInRange(len, sg->start_bit, sg->bit_length, sg->big_endian != 0)) {
+                skipped++; /* short frame: do not decode zeros into the channel or refresh its timestamp */
+                continue;
+            }
             uint32_t raw = HeadDecode_ExtractBits(data, len, sg->start_bit, sg->bit_length, sg->big_endian);
             float v;
             if (sg->is_float) {
@@ -91,9 +120,11 @@ static bool process_rx(const HeadConfig_t *cfg, HeadLive_t *live, uint8_t bus, u
                 v = (float)raw;
             }
             live->values[sg->slot].f = v * sg->multiplier + sg->offset;
-            live->last_rx_ms[sg->slot] = now_ms;
+            mark_rx(live, sg->slot, now_ms);
+            decoded++;
         }
-        handled = true;
+        if (skipped == 0 || decoded > 0) /* a frame that lost every signal to a short payload counts as dropped */
+            handled = true;
     }
     return handled;
 }
@@ -120,7 +151,19 @@ bool HeadDecode_Process(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *
 void HeadDecode_UpdateStale(const HeadConfig_t *cfg, HeadLive_t *live, uint32_t now_ms)
 {
     for (uint16_t i = 0; i < cfg->channel_count; i++) {
-        uint32_t last = live->last_rx_ms[i];
-        live->stale[i] = (last == HEAD_NEVER_RX || (uint32_t)(now_ms - last) > cfg->channels[i].timeout_ms) ? 1u : 0u;
+        uint32_t timeout = cfg->channels[i].timeout_ms;
+        uint8_t stale;
+        if (!live->rx_seen[i]) {
+            stale = 1;
+        } else if (timeout == 0) {
+            stale = 0; /* 0 = no timeout: valid forever once received */
+        } else {
+            int32_t age = (int32_t)(now_ms - live->last_rx_ms[i]); /* negative: stamped after `now` was sampled */
+            if (age >= 0)
+                stale = (uint32_t)age > timeout;
+            else
+                stale = age < -(int32_t)HEAD_STALE_FUTURE_MS; /* far in the "future" = the clock wrapped past an old stamp */
+        }
+        live->stale[i] = stale;
     }
 }

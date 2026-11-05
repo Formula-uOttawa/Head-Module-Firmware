@@ -24,10 +24,23 @@
 #define HEAD_MAX_TX_FRAMES 32u
 #define HEAD_MAX_TX_SIGNALS 128u
 
+/* hardware / protocol limits enforced by HeadCfg_Parse so that a bad blob is rejected before any bus is touched */
+#define HEAD_MAX_HUBS 8u                 /* hub ids 0..7 (hub_lost[] / hub_last_counter[] size) */
+#define HEAD_MAX_PERIPHERAL 2u           /* FDCAN1, FDCAN2 (peripheral numbers 1..2) */
+#define HEAD_MAX_FRAME_BYTES 64u         /* CAN-FD payload */
+#define HEAD_CLASSIC_FRAME_BYTES 8u
+#define HEAD_MAX_STD_FILTERS_PER_BUS 128u /* FDCAN message RAM filter limits */
+#define HEAD_MAX_EXT_FILTERS_PER_BUS 64u
+#define HEAD_MAX_NOMINAL_BITRATE 1000000u
+#define HEAD_MAX_DATA_BITRATE 8000000u
+#define HEAD_STD_ID_MAX 0x7FFu
+#define HEAD_EXT_ID_MAX 0x1FFFFFFFu
+
 typedef enum { HEAD_VALUE_U32 = 0, HEAD_VALUE_I32 = 1, HEAD_VALUE_F32 = 2 } HeadValueType_t;
 typedef enum { HEAD_SRC_HUB = 0, HEAD_SRC_CAN_RX = 1 } HeadSource_t;
 typedef union { uint32_t u; int32_t i; float f; } HeadValue_t;
 
+/* timeout_ms == 0: the channel never goes stale once it has been received */
 typedef struct { uint16_t channel_id; uint8_t value_type; uint8_t source; uint16_t rate_hz; uint32_t timeout_ms; } HeadChannel_t;
 /* matched with (id & id_mask) == id_base; payload must be at least min_len bytes */
 typedef struct { uint32_t id_base; uint32_t id_mask; uint8_t hub; uint8_t min_len; uint16_t first_route; uint16_t route_count; } HeadHubFrame_t;
@@ -72,6 +85,10 @@ uint32_t HeadCfg_Crc32(uint32_t crc, const uint8_t *data, size_t len);
 
 /* Validate and decode a blob into *out. On any error *out is left zeroed (safe to ignore). */
 HeadCfgStatus_t HeadCfg_Parse(const uint8_t *blob, uint32_t len, HeadConfig_t *out);
+
+/* Same as HeadCfg_Parse but without the CRC pass: only for blobs whose CRC was just verified (HeadCfg_Verify,
+   HeadSlots_FindNewest), so the 16 KB are not checksummed twice. Header magic/version/length are still checked. */
+HeadCfgStatus_t HeadCfg_ParseVerified(const uint8_t *blob, uint32_t len, HeadConfig_t *out);
 
 /* Header + length + CRC check only (cheap, no 16 KB scratch needed). Used for flash contents before a full parse. */
 HeadCfgStatus_t HeadCfg_Verify(const uint8_t *blob, uint32_t len);
