@@ -151,7 +151,8 @@ class DeviceSession:
             info = c.info()
             if c.device_type == "hub":  # raw value per connector-pin slot (slot = pin - 1); names come from the project
                 r = c.live(0, 24)
-                return {"device_type": "hub", "slots": [{"slot": i, "value": v} for i, v in enumerate(r["raw"])]}
+                return {"device_type": "hub", "slots": [{"slot": i, "value": v, "stale": r["stale"][i], "no_sensor": r["no_sensor"][i]}
+                                                        for i, v in enumerate(r["raw"])]}
             chans = self._active_channels(info)
             rows, slot = [], 0
             while slot < len(chans):

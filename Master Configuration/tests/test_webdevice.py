@@ -32,7 +32,7 @@ def test_connect_upload_download_live(api):
     assert r.status_code == 200 and r.json()["info"]["active_source"] == "default"
     body = p.model_dump(mode="json")
     r = c.post("/api/device/upload", json={"project": body, "apply": True, "store": True})
-    assert r.status_code == 200 and r.json() == {"applied": True, "stored": True, "hash": p.config_hash(), "bytes": len(blobmod.build(p)), "project_hash": p.config_hash()}
+    assert r.status_code == 200 and r.json() == {"applied": True, "stored": True, "hash": p.config_hash(), "bytes": len(blobmod.build(p)), "project_hash": p.config_hash(), "store_error": None}
     cfg = c.get("/api/device/config", params={"source": "stored"}).json()
     assert cfg["hash"] == p.config_hash() and cfg["counts"]["channels"] == len([ch for ch in p.channels if ch.enabled])
     live = c.get("/api/device/live").json()

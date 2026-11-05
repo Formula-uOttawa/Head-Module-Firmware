@@ -127,7 +127,7 @@ def test_config_upload_download_roundtrip(dev):
     blob = blobmod.build(sample_project())
     prog = []
     res = c.upload_config(blob, apply=True, store=True, progress=lambda a, b: prog.append(a))
-    assert res == {"applied": True, "stored": True, "hash": sample_project().config_hash()} and prog[-1] == len(blob)
+    assert res == {"applied": True, "stored": True, "hash": sample_project().config_hash(), "store_error": None} and prog[-1] == len(blob)
     assert c.read_config("active") == blob and c.read_config("stored") == blob
     info = c.info()
     assert info["active_source"] == "flash" and info["stored_hash"] == sample_project().config_hash()
@@ -172,7 +172,7 @@ def test_upload_errors(dev):
 def test_live_stats_sniff(dev):
     c, _, sniffs = dev
     live = c.live(2, 3)
-    assert live == {"first": 2, "raw": [2007, 3007, 4007], "stale": [False, True, False]}
+    assert live["first"] == 2 and live["raw"] == [2007, 3007, 4007] and live["stale"] == [False, True, False]
     st = c.stats()
     assert st["buses"][0] == {"rx_frames": 5, "rx_matched": 4, "rx_dropped": 1, "fifo_lost": 2, "bus_off": False, "error_passive": True}
     assert st["hub_lost"][0] == 9 and len(st["hub_lost"]) == 8
@@ -181,3 +181,39 @@ def test_live_stats_sniff(dev):
     assert sniffs and sniffs[0] == {"bus": 1, "extended": True, "fd": False, "id": 0x18FF1234, "ts_ms": 77, "data": b"\xaa\xbb\xcc"}
     with pytest.raises(m.DeviceError):
         c.sniff(9, True)
+
+
+def test_store_failure_after_apply_is_reported_not_raised(tmp_path, monkeypatch):
+    """A flash failure after a successful apply comes back as a normal reply with stored=False and a store_error."""
+    monkeypatch.setenv("HPROTO_SIM_FAIL_STORE", "1")
+    exe = build_sim(tmp_path, "proto_sim", ["head_cfg.c", "head_decode.c", "head_slots.c", "hframe.c", "hproto.c"])
+    t = ProcTransport(exe)
+    try:
+        c = DeviceClient(t, timeout=3.0)
+        res = c.upload_config(blobmod.build(sample_project()), apply=True, store=True)
+        assert res["applied"] is True and res["stored"] is False and res["store_error"] == "flash error"
+    finally:
+        t.close()
+
+
+def test_reboot_requires_the_magic(dev):
+    c, _, _ = dev
+    with pytest.raises(m.DeviceError, match="bad request"):
+        c.request(m.REBOOT)                          # no payload
+    with pytest.raises(m.DeviceError, match="bad request"):
+        c.request(m.REBOOT, struct.pack("<I", 0x12345678))
+    c.reboot()                                       # the client sends the magic
+
+
+def test_parse_extended_info_and_stats():
+    base = struct.pack("<BBHIQQBBHHH12sI", 1, 1, 0x0101, 5000, 0x11, 0x22, 1, 1, 256, 16384, 3, bytes(range(12)), 80_000_000)
+    ext = struct.pack("<BBHIIIIII", 0x02, 5, 4, 1, 2, 3, 4, 5, 6) + bytes([0x24, 0, 0, 0])
+    info = m.parse_info(base + ext)
+    assert info["cm4"] == {"buses_down": False, "boot_apply_pending": True, "boot_apply_rc": "invalid config", "boot_apply_tries": 4}
+    assert info["link"] == {"crc_failures": 1, "oversize_frames": 2, "desyncs": 3, "rx_overflow": 4, "uart_errors": 5, "tx_failures": 6}
+    assert info["tcan_init"]["status"] == 0x24 and "warm start" in info["tcan_init"]["notes"] and "SBC init failed" in info["tcan_init"]["notes"]
+    assert "cm4" not in m.parse_info(base)  # older firmware: no extra fields
+    stats = struct.pack("<B", 1) + struct.pack("<IIIIBB", 10, 9, 1, 0, 0, 0) + bytes([8]) + bytes(32) + bytes([1]) + struct.pack("<II", 7, 2)
+    assert "rx_nobus" not in m.parse_stats(stats)
+    s2 = m.parse_stats(stats + struct.pack("<III", 11, 12, 13))
+    assert (s2["rx_nobus"], s2["rx_ring_overrun"], s2["rx_ring_high"]) == (11, 12, 13) and s2["buses"][0]["tx_frames"] == 7

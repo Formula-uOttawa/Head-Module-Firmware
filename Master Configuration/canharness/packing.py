@@ -91,7 +91,7 @@ def pack(project: Project) -> tuple[list[PackedFrame], list[str]]:
         for idx in range(32):
             key = (ch.hub, ch.sample_rate_hz, idx)
             frame(*key)
-            step = max(ch.raw_bytes, 1)
+            step = {1: 1, 2: 2, 3: 1, 4: 4}.get(ch.raw_bytes, 1)  # natural alignment; 3-byte fields need none
             off = -(-s.data_start // step) * step  # natural alignment
             while off + ch.raw_bytes <= s.data_end:
                 if fits(key, off, ch.raw_bytes):

@@ -9,6 +9,8 @@ from . import canid, cantiming, hwmap, packing, rxdecode
 from .model import Project, SensorType
 
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MAX_NOMINAL_BITRATE = 1_000_000  # mirrored in Common/Src/head_cfg.c
+MAX_DATA_BITRATE = 8_000_000
 
 
 @dataclass
@@ -72,6 +74,9 @@ def validate(project: Project) -> list[Issue]:
             err(w, f"{ch.sample_rate_hz} Hz is not supported by the hub firmware ({project.settings.supported_rates_hz})")
         if not 1 <= ch.raw_bytes <= 4:
             err(w, "raw_bytes must be 1-4")
+        elif ch.sensor_type != SensorType.DIGITAL and (ch.raw_bytes < 3 or not ch.signed):
+            # the hub sends the raw 24-bit two's complement ADC code (sign-extended, low bytes first): anything shorter wraps
+            err(w, "analog channels carry the raw 24-bit signed ADC code: set raw_bytes to 3 (or 4) and signed")
         if ch.pin_sig_pos is None:
             err(w, "signal (+) pin missing")
             continue
@@ -142,6 +147,10 @@ def _validate_rx(project: Project, err, warn) -> None:
             err(f"bus {b.id}", "bus id must be a valid C identifier")
         if b.head_peripheral.upper() not in ("FDCAN1", "FDCAN2"):  # the H745 has two FDCAN controllers
             err(f"bus {b.id}", "head_peripheral must be FDCAN1 or FDCAN2")
+        if b.type == "can_fd" and b.head_peripheral.upper() == "FDCAN2":  # CubeMX gives FDCAN2 8-byte message RAM elements
+            err(f"bus {b.id}", "FDCAN2 has 8-byte message RAM elements in the CubeMX setup, so it can only be a classic CAN bus (use FDCAN1 for CAN-FD)")
+        if b.bitrate > MAX_NOMINAL_BITRATE or (b.data_bitrate or 0) > MAX_DATA_BITRATE:  # firmware rejects these too
+            err(f"bus {b.id}", f"bit rates are limited to {MAX_NOMINAL_BITRATE // 1_000_000} Mbit/s nominal and {MAX_DATA_BITRATE // 1_000_000} Mbit/s data")
         if b.bitrate <= 0 or (b.type == "can_fd" and not b.data_bitrate):
             err(f"bus {b.id}", "bit rate(s) must be set (CAN-FD buses need a data bit rate)")
         else:  # every device on the bus must be able to generate the rates exactly from its own FDCAN kernel clock

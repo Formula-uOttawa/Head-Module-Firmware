@@ -15,6 +15,15 @@ def _short(name: str) -> str:
     return s if s and not s[0].isdigit() else f"_{s}"
 
 
+def _placement(sensor_type: SensorType, ct: dict) -> dict:
+    """Legacy files stored 2-byte unsigned analog samples at fixed offsets. The hub now sends the raw 24-bit signed
+    ADC code (3 bytes), so analog channels are upgraded and re-packed automatically; digital channels keep their size."""
+    if sensor_type == SensorType.DIGITAL:
+        return {"raw_bytes": int(ct["byte_length"]), "frame_idx": int(ct.get("frame_idx", ct.get("can_frame", 0))),
+                "byte_offset": int(ct["byte_offset"])}
+    return {"raw_bytes": 3, "signed": True}
+
+
 def import_yaml(path: Path, hub_name: str = "Hub") -> Project:
     return from_data(yaml.safe_load(path.read_text(encoding="utf-8")), path.stem, hub_name)
 
@@ -36,9 +45,7 @@ def from_data(data: dict, name: str = "legacy", hub_name: str = "Hub") -> Projec
             sample_rate_hz=int(c["sample_rate_hz"]),
             pin_sig_pos=int(c["channel"]),
             pin_sig_neg=None if ref == "GND" else int(ref),
-            raw_bytes=int(ct["byte_length"]),
-            frame_idx=int(ct.get("frame_idx", ct.get("can_frame", 0))),
-            byte_offset=int(ct["byte_offset"]),
+            **_placement(SensorType(str(c["sensor_type"]).lower()), ct),
         ))
     project.hubs = [Hub(hub_id=h, name=f"{hub_name} {h}") for h in sorted(hubs)]
     return project

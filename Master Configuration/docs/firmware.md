@@ -28,7 +28,7 @@ Hooks in generated files are limited to USER CODE sections (`main.c` of each cor
 
 ## Configuration flow
 1. The app builds a **config blob** (`canharness/blob.py`, format in `protocol.md`) from `system.json`.
-2. Boot: the CM4 loads the blob from flash (`0x080E0000`) if its CRC is valid, otherwise the compiled-in default.
+2. Boot: the CM4 loads the newest valid slot of the flash log (`0x080E0000`, see protocol.md 3.2), otherwise the compiled-in default; if the FDCAN clock is not up yet it retries every 100 ms.
 3. Runtime: the app uploads a blob (`CFG_BEGIN/CHUNK/COMMIT`). The CM7 CRC-checks and fully validates it, then either
    hands it to the CM4 (`HEAD_CMD_APPLY_STAGED`, apply) and/or writes it to flash (store).
 4. The CM4 parses into the inactive `HeadConfig_t`, stops the buses, swaps the config pointer, re-initialises each FDCAN
@@ -66,3 +66,10 @@ receiving pad is open-drain with a pull-up.
 * UDP transport and the UDP data stream to the dash (needs LwIP; requires an `.ioc` change).
 * Hub config push over CAN (`HUB_CFG_*` message types are reserved; the hub firmware has no CAN receive path yet).
 * TX of any frame from the head.
+
+## Cross-core mailbox rules (see the header comment of `Common/Inc/head_shared.h`)
+* The CM7 issues a request only when `cmd_req == cmd_ack` (otherwise `busy`, also after a timeout), fills `cmd`, `cmd_arg`, `cmd_len`, `cmd_crc` (for `APPLY_STAGED`: the blob header CRC, so a stale command is never run against a newer upload) and a non-zero `cmd_seq`, then a barrier, then increments `cmd_req`; it waits for the ack and checks `cmd_result_seq`.
+* `HEAD_CMD_SET_SOURCE` tells the CM4 where the active config now lives (0 default, 1 flash, 2 RAM only). Only the CM4 writes `active_source`.
+* Readiness = valid `magic` and a changed `cm4_heartbeat`; the CM7 never clears `magic`. `publish_seq` is a seqlock (odd = config swap in progress) that INFO and CFG_READ honour.
+* The FDCAN RX interrupt only pushes frames (with the tick) into a 32-entry ring; decoding, statistics, sniffing and stale handling run in `HeadCm4_Poll`.
+* HAL note: on the H7 HAL the FDCAN `DataLength` field is the plain DLC code 0..15 (not `code << 16`); a static assert guards this.

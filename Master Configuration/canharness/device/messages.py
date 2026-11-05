@@ -8,6 +8,7 @@ INFO, CFG_BEGIN, CFG_CHUNK, CFG_COMMIT, CFG_READ, CFG_CLEAR, IDENT = 0x01, 0x02,
 DEVICE_HEAD, DEVICE_HUB = 1, 2
 LIVE_GET, STATS_GET, SNIFF_SET, SNIFF_FRAME, REBOOT, ERROR = 0x10, 0x11, 0x30, 0xB1, 0x70, 0xFF
 COMMIT_APPLY, COMMIT_STORE = 0x01, 0x02
+REBOOT_MAGIC = 0xB007F00D  # REBOOT must carry this little-endian u32, so a stray frame cannot reset the board
 CHUNK_MAX = 240
 
 NAMES = {INFO: "INFO", IDENT: "IDENT", CFG_BEGIN: "CFG_BEGIN", CFG_CHUNK: "CFG_CHUNK", CFG_COMMIT: "CFG_COMMIT", CFG_READ: "CFG_READ",
@@ -43,30 +44,62 @@ def parse_ident(p: bytes) -> dict:
             "uid": p[6:18].hex()}
 
 
+HUB_FLAGS = {0: "can_running", 1: "acq_running", 2: "afe_cfg_bad", 3: "tcan_ok", 4: "vcan_ok", 5: "sched_cfg_bad", 6: "afe_fault"}
+TCAN_INIT_BITS = {0x01: "watchdog disable needed a retry", 0x02: "watchdog could not be disabled", 0x08: "could not enter normal mode",
+                  0x10: "standby watchdog not disabled", 0x20: "warm start (SBC already configured)", 0x40: "VCAN not in regulation",
+                  0x80: "CAN transceiver not enabled"}
+HEAD_TCAN_INIT_BITS = {0x01: "watchdog disable needed a retry", 0x02: "watchdog could not be disabled", 0x04: "SBC init failed",
+                       0x08: "could not enter normal mode", 0x10: "standby watchdog not disabled", 0x20: "warm start",
+                       0x40: "VCAN not in regulation", 0x80: "CAN transceiver not enabled"}
+AFE_STATUS_BITS = {0x01: "AFE A id ok", 0x02: "AFE B id ok", 0x04: "AFE A running", 0x08: "AFE B running",
+                   0x10: "AFE A config ok", 0x20: "AFE B config ok", 0x80: "SPI2 not in mode 1"}
+
+
 def parse_hub_info(p: bytes) -> dict:
     proto, _, fw, up, hub_id, flags, na, nb, nd, tcan, tec, rec, bus_off, passive = struct.unpack_from("<BBHIBBBBBBBBBB", p)
     sysclk, kernel, ok, fail, skipped, invalid = struct.unpack_from("<IIIIII", p, 20)
-    return {"device_type": "hub", "proto_version": proto, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
+    info = {"device_type": "hub", "proto_version": proto, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
             "hub_id": None if hub_id == 0xFF else hub_id, "can_running": bool(flags & 1),
+            "flags": {name: bool(flags & (1 << bit)) for bit, name in HUB_FLAGS.items()},
             "sensors": {"afe_a": na, "afe_b": nb, "digital": nd}, "tcan_int": tcan,
             "can": {"tec": tec, "rec": rec, "bus_off": bool(bus_off), "error_passive": bool(passive)},
             "sysclk_hz": sysclk, "fdcan_kernel_hz": kernel,
             "tx": {"ok": ok, "failed": fail, "skipped": skipped, "invalid": invalid}, "uid": p[44:56].hex()}
+    if len(p) >= 88:  # fields appended by newer hub firmware
+        full, spi_err, resyncs, overrun, rx_over, uart_err, tx_fail = struct.unpack_from("<IIIIIII", p, 56)
+        init, afe, inputs = p[84], p[85], p[86]
+        info["tx"]["drop_full"] = full
+        info["afe"] = {"spi_errors": spi_err, "resyncs": resyncs, "drdy_overruns": overrun, "status": afe,
+                       "status_text": [t for bit, t in AFE_STATUS_BITS.items() if afe & bit]}
+        info["uart"] = {"rx_overflow": rx_over, "errors": uart_err, "tx_failures": tx_fail}
+        info["tcan_init"] = {"status": init, "notes": [t for bit, t in TCAN_INIT_BITS.items() if init & bit]}
+        info["inputs"] = {"fault": [bool(inputs >> i & 1) for i in range(4)], "pg_5v": bool(inputs & 0x10), "can_int": bool(inputs & 0x20)}
+    return info
 
 
 def parse_info(p: bytes) -> dict:
     (proto, blob, fw, up, ah, sh, src, cm4, maxch, maxblob, chans) = struct.unpack_from("<BBHIQQBBHHH", p)
-    return {"device_type": "head", "proto_version": proto, "blob_version": blob, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
+    info = {"device_type": "head", "proto_version": proto, "blob_version": blob, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
             "active_hash": f"{ah:016x}", "stored_hash": f"{sh:016x}" if sh else None,
             "active_source": ["default", "flash", "uploaded"][src] if src < 3 else src, "cm4_alive": bool(cm4),
             "max_channels": maxch, "max_blob": maxblob, "channel_count": chans, "uid": p[32:44].hex(),
             "fdcan_kernel_hz": struct.unpack_from("<I", p, 44)[0] if len(p) >= 48 else None}
+    if len(p) >= 80:  # appended by newer head firmware
+        st, rc, tries, crc_fail, overflow, desync, ring_over, uart_err, tx_fail = struct.unpack_from("<BBHIIIIII", p, 48)
+        init = p[76]
+        info["cm4"] = {"buses_down": bool(st & 1), "boot_apply_pending": bool(st & 2), "boot_apply_rc": ERRORS.get(rc, rc) if rc else None,
+                       "boot_apply_tries": tries}
+        info["link"] = {"crc_failures": crc_fail, "oversize_frames": overflow, "desyncs": desync, "rx_overflow": ring_over,
+                        "uart_errors": uart_err, "tx_failures": tx_fail}
+        info["tcan_init"] = {"status": init, "notes": [t for bit, t in HEAD_TCAN_INIT_BITS.items() if init & bit]}
+    return info
 
 
 def parse_live(p: bytes) -> dict:
     first, count = struct.unpack_from("<HH", p)
     vals = [struct.unpack_from("<IB", p, 4 + 5 * i) for i in range(count)]
-    return {"first": first, "raw": [v for v, _ in vals], "stale": [bool(f & 1) for _, f in vals]}
+    return {"first": first, "raw": [v for v, _ in vals], "stale": [bool(f & 1) for _, f in vals],
+            "no_sensor": [bool(f & 2) for _, f in vals]}
 
 
 def parse_stats(p: bytes) -> dict:
@@ -80,10 +113,14 @@ def parse_stats(p: bytes) -> dict:
     nh = p[off]
     off += 1 + 4 * nh
     hub_lost = list(struct.unpack_from(f"<{nh}I", p, off - 4 * nh))
+    out = {"buses": buses, "hub_lost": hub_lost}
     if off < len(p) and p[off] == nbus and off + 1 + 8 * nbus <= len(p):  # transmit counters (newer firmware)
         for i, b in enumerate(buses):
             b["tx_frames"], b["tx_dropped"] = struct.unpack_from("<II", p, off + 1 + 8 * i)
-    return {"buses": buses, "hub_lost": hub_lost}
+        off += 1 + 8 * nbus
+        if off + 12 <= len(p):  # global receive-path counters (newest firmware)
+            out["rx_nobus"], out["rx_ring_overrun"], out["rx_ring_high"] = struct.unpack_from("<III", p, off)
+    return out
 
 
 def parse_sniff(p: bytes) -> dict:

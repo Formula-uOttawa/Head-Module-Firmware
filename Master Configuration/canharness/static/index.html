@@ -207,7 +207,7 @@ function newChannel(over = {}) {
   return Object.assign({
     channel_id: id, name: "New channel", short_name: `CH${id}`, source: "hub", hub, sensor_type: "active", sample_rate_hz: 100,
     units: "", scaling: { gain: 1, offset: 0 }, fault_low: null, fault_high: null, pin_sig_pos: null, pin_sig_neg: null,
-    pin_5v: null, pin_gnd: null, pin_gnd_connector: 2, cal_x: [], cal_y: [], raw_bytes: 2, signed: false,
+    pin_5v: null, pin_gnd: null, pin_gnd_connector: 2, cal_x: [], cal_y: [], raw_bytes: 3, signed: true,  // analog hub channels carry the raw 24-bit signed ADC code
     frame_idx: null, byte_offset: null, enabled: true, notes: "",
   }, over);
 }
@@ -266,7 +266,8 @@ function channelRow(ch) {
     h("td", {}, h("select", { value: ch.sensor_type, disabled: !isHub, onchange: e => {
         ch.sensor_type = e.target.value;
         if (ch.sensor_type === "thermocouple") { ch.pin_sig_neg = 20; ch.pin_sig_pos = null; } else ch.pin_sig_neg = null;
-        if (ch.sensor_type === "digital") ch.pin_sig_pos = freePin(ch.hub, "digital");
+        if (ch.sensor_type === "digital") { ch.pin_sig_pos = freePin(ch.hub, "digital"); ch.raw_bytes = 1; ch.signed = false; }
+        else if (ch.raw_bytes < 3 || !ch.signed) { ch.raw_bytes = 3; ch.signed = true; }  // analog: raw 24-bit two's complement
         changed(true); } }, (isHub ? TYPES : ["can"]).map(t => h("option", { value: t }, t)))),
     h("td", {}, h("select", { value: ch.sample_rate_hz, onchange: e => { ch.sample_rate_hz = +e.target.value; changed(false); } },
       HW.rate_codes.map(r => h("option", { value: r }, `${r} Hz`)))),
@@ -803,7 +804,18 @@ function hubInfoBody(i) {
     ...row("Sensors in firmware", [`AFE A ${i.sensors.afe_a}, AFE B ${i.sensors.afe_b}, digital ${i.sensors.digital} `,
       i.hub_id == null ? null : sensorsMatch ? h("span", { class: "chip ok" }, "matches project") : h("span", { class: "chip warn" }, `project has ${pAnalog} analog, ${pDig} digital for this hub: firmware config is out of date`)]),
     ...row("CAN transmit", i.can_running ? h("span", { class: "chip ok" }, "running") : h("span", { class: "chip warn" }, "not started")),
-    ...row("CAN frames", `${i.tx.ok} sent, ${i.tx.failed} failed, ${i.tx.skipped} skipped (empty), ${i.tx.invalid} invalid config`),
+    ...(i.flags ? [
+      ...row("Acquisition", [i.flags.acq_running ? h("span", { class: "chip ok" }, "running") : h("span", { class: "chip warn" }, "not running"),
+        i.flags.afe_cfg_bad ? h("span", { class: "chip bad" }, "AFE rate/config problem") : null, i.flags.afe_fault ? h("span", { class: "chip bad" }, "AFE fault") : null,
+        i.afe ? ` ${i.afe.status_text.join(", ") || "no AFE status"} · ${i.afe.spi_errors} SPI errors, ${i.afe.resyncs} resyncs, ${i.afe.drdy_overruns} DRDY overruns` : null]),
+      ...row("System basis chip", [i.flags.tcan_ok ? h("span", { class: "chip ok" }, "configured") : h("span", { class: "chip bad" }, "NOT configured"),
+        i.flags.vcan_ok ? h("span", { class: "chip ok" }, "VCAN ok") : h("span", { class: "chip warn" }, "VCAN missing"),
+        i.tcan_init && i.tcan_init.notes.length ? ` ${i.tcan_init.notes.join("; ")}` : null]),
+      i.flags.sched_cfg_bad ? row("CAN scheduler", h("span", { class: "chip bad" }, `invalid config (${i.tx.invalid} entries rejected)`)) : [],
+    ].flat() : []),
+    ...row("CAN frames", `${i.tx.ok} sent, ${i.tx.failed} failed, ${i.tx.skipped} skipped (empty), ${i.tx.invalid} invalid config` + (i.tx.drop_full != null ? `, ${i.tx.drop_full} dropped (TX FIFO full)` : "")),
+    ...(i.uart ? row("UART link", `${i.uart.rx_overflow} RX overflows, ${i.uart.errors} line errors, ${i.uart.tx_failures} TX failures`) : []),
+    ...(i.inputs ? row("Board inputs", `FAULT0-3: ${i.inputs.fault.map(f => (f ? 1 : 0)).join("")}, PG_5V: ${i.inputs.pg_5v ? 1 : 0}, CAN_INT: ${i.inputs.can_int ? 1 : 0}`) : []),
     ...row("CAN errors", [`TEC ${i.can.tec}, REC ${i.can.rec} `, i.can.bus_off ? h("span", { class: "chip bad" }, "BUS OFF") : null, i.can.error_passive ? h("span", { class: "chip warn" }, "error passive") : null]),
     ...row("CAN kernel clock", clockChip(i.fdcan_kernel_hz, P.settings.hub_fdcan_kernel_hz, "bus rates will not be generated correctly")),
     ...row("System clock", `${i.sysclk_hz / 1e6} MHz`), ...row("TCAN2410 int. register", h2("0x" + i.tcan_int.toString(16).toUpperCase().padStart(2, "0"))),
@@ -817,6 +829,12 @@ function devInfoBody() {
     ...row("Firmware", i.fw_version), ...row("Device UID", h2(i.uid)), ...row("CM4 (CAN core)", i.cm4_alive ? "running" : "NOT RESPONDING"),
     ...row("Active config", [hashChip(i.active_hash), ` (source: ${i.active_source}, ${i.channel_count} channels)`]),
     ...row("Stored config", hashChip(i.stored_hash)),
+    ...(i.cm4 ? row("CAN buses", i.cm4.buses_down ? h("span", { class: "chip bad" }, "DOWN: the last config apply failed and rollback did not restore them")
+      : i.cm4.boot_apply_pending ? h("span", { class: "chip warn" }, `starting… boot apply retrying (${i.cm4.boot_apply_rc || "waiting"}, ${i.cm4.boot_apply_tries} tries)`)
+      : h("span", { class: "chip ok" }, "running")) : []),
+    ...(i.tcan_init ? row("System basis chip", [i.tcan_init.status & 0x06 ? h("span", { class: "chip bad" }, "NOT configured") : h("span", { class: "chip ok" }, "configured"),
+      i.tcan_init.notes.length ? ` ${i.tcan_init.notes.join("; ")}` : null]) : []),
+    ...(i.link ? row("UART link", `${i.link.crc_failures} CRC failures, ${i.link.oversize_frames} oversize frames, ${i.link.desyncs} desyncs, ${i.link.rx_overflow} RX overflows, ${i.link.uart_errors} line errors, ${i.link.tx_failures} TX failures`) : []),
     ...row("CAN kernel clock", i.fdcan_kernel_hz ? [`${i.fdcan_kernel_hz / 1e6} MHz `, i.fdcan_kernel_hz === P.settings.head_fdcan_kernel_hz ? h("span", { class: "chip ok" }, "matches project")
       : h("span", { class: "chip bad" }, `project expects ${P.settings.head_fdcan_kernel_hz / 1e6} MHz: bus rates will not be generated correctly`)] : "unknown"),
     ...row("Uptime", `${(i.uptime_ms / 1000).toFixed(1)} s`));
@@ -825,12 +843,14 @@ function devHubLiveBody() {
   const fmt = v => Number.isInteger(v) ? v : +v.toPrecision(6);
   const hubId = dev.info ? dev.info.hub_id : null;
   const byPin = new Map(P.channels.filter(c => c.enabled && c.source === "hub" && (hubId == null || c.hub === hubId) && c.pin_sig_pos != null).map(c => [c.pin_sig_pos, c]));
-  return h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Pin", "Input", "Channel", "Raw", "Calibrated", "Units"].map(c => h("th", {}, c)))),
+  return h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Pin", "Input", "Channel", "Raw", "Calibrated", "Units", "Status"].map(c => h("th", {}, c)))),
     h("tbody", {}, dev.live.slots.map(r => {
       const pin = r.slot + 1, ch = byPin.get(pin);
-      return h("tr", { style: ch ? "" : "opacity:.45" }, h("td", {}, pin), h("td", { class: "muted" }, (() => { const hp = HW.conn1.find(x => x.pin === pin); return !hp ? "" : hp.afe ? `AFE ${hp.afe}${hp.index}` : hp.role === "digital" ? `DIN${hp.index}` : ""; })()),
-        h("td", {}, ch ? ch.name : "—"), h("td", { class: "mono" }, r.value),
-        h("td", { class: "mono" }, ch ? fmt(evalCal(ch, r.value)) : "—"), h("td", {}, ch ? ch.units : ""));
+      const hp = HW.conn1.find(x => x.pin === pin), analog = hp && hp.afe, val = analog ? (r.value | 0) : r.value;  // analog = signed 24-bit code
+      return h("tr", { style: ch ? "" : "opacity:.45" }, h("td", {}, pin), h("td", { class: "muted" }, !hp ? "" : hp.afe ? `AFE ${hp.afe}${hp.index}` : hp.role === "digital" ? `DIN${hp.index}` : ""),
+        h("td", {}, ch ? ch.name : "—"), h("td", { class: "mono" }, val),
+        h("td", { class: "mono" }, ch && !r.stale ? fmt(evalCal(ch, val)) : "—"), h("td", {}, ch ? ch.units : ""),
+        h("td", {}, r.no_sensor ? "" : r.stale ? h("span", { class: "chip warn" }, "stale") : h("span", { class: "chip ok" }, "live")));
     }))));
 }
 function devLiveBody() {
@@ -849,6 +869,7 @@ function devStatsBody() {
   const s = dev.stats; if (!s || devIsHub()) return h("span", { class: "muted" }, devIsHub() ? "" : "—");
   return h("div", {}, s.buses.map((b, i) => h("div", {}, h("b", {}, `Bus ${i} ${P.buses[i] ? "(" + P.buses[i].id + ")" : ""}: `),
     `${b.rx_frames} rx, ${b.rx_matched} matched, ${b.rx_dropped} unmatched, ${b.fifo_lost} fifo-lost` + (b.tx_frames != null ? `, ${b.tx_frames} tx${b.tx_dropped ? ` (${b.tx_dropped} dropped)` : ""}` : ""), b.bus_off ? h("span", { class: "chip bad" }, "BUS OFF") : null, b.error_passive ? h("span", { class: "chip warn" }, "error passive") : null)),
+    s.rx_ring_overrun != null && (s.rx_ring_overrun || s.rx_nobus) ? h("div", { class: "chip warn" }, `receive ring overruns: ${s.rx_ring_overrun} (peak ${s.rx_ring_high}), frames on an unmapped bus: ${s.rx_nobus}`) : null,
     s.hub_lost.some(x => x) ? h("div", {}, "Estimated hub frames lost: ", s.hub_lost.map((x, i) => x ? `hub ${i}: ${x}` : null).filter(Boolean).join(", ")) : null);
 }
 function devSniffBody() {
@@ -870,7 +891,7 @@ function devDefineFrame(f) {
   tab = "rx"; changed(true);
 }
 async function devUpload(apply, store) {
-  try { devOk("Uploading…"); const r = await api("POST", "/api/device/upload", { project: P, apply, store }); devOk(`Uploaded ${r.bytes} bytes${r.applied ? ", applied" : ""}${r.stored ? ", stored in flash" : ""}.`); }
+  try { devOk("Uploading…"); const r = await api("POST", "/api/device/upload", { project: P, apply, store }); devOk(`Uploaded ${r.bytes} bytes${r.applied ? ", applied" : ""}${r.stored ? ", stored in flash" : ""}.`); if (store && !r.stored) devErr({ detail: `The config is active but could NOT be stored in flash (${r.store_error || "unknown error"}); it will be lost at the next reset.` }); }
   catch (e) { devErr(e); }
   devRefreshInfo();
 }

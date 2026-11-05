@@ -1,5 +1,6 @@
 /* Host UART simulator: raw bytes in on stdin, raw bytes out on stdout. Real firmware framing + dispatcher, fake platform. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "head_cfg.h"
@@ -33,15 +34,29 @@ static void get_info(void *c, HprotoInfo_t *i)
     i->channel_count = 3;
     i->fdcan_kernel_hz = 80000000u;
     for (int k = 0; k < 12; k++) i->uid[k] = (uint8_t)k;
+    i->cm4_status = 0x02; i->boot_apply_rc = 2; i->boot_apply_tries = 300;
+    i->hframe_crc_fail = 11; i->hframe_overflow = 12; i->hframe_desync = 13;
+    i->rx_ring_overflow = 14; i->uart_err = 15; i->uart_tx_fail = 16;
+    i->tcan_init_status = 0x24;
 }
 
-static uint8_t cfg_commit(void *c, const uint8_t *blob, uint32_t len, uint8_t flags, uint64_t *hash, uint8_t *applied, uint8_t *st)
+static int fail_store; /* env HPROTO_SIM_FAIL_STORE: the flash write fails after a successful apply */
+
+static uint8_t cfg_commit(void *c, const uint8_t *blob, uint32_t len, uint8_t flags, uint64_t *hash, uint8_t *applied, uint8_t *st,
+                          uint8_t *store_err)
 {
     (void)c;
     if (HeadCfg_Parse(blob, len, &scratch) != HEAD_CFG_OK) return HERR_INVALID_CONFIG;
     *hash = scratch.config_hash;
     if (flags & HPROTO_COMMIT_APPLY) { memcpy(active, blob, len); active_len = len; active_src = 2; *applied = 1; }
-    if (flags & HPROTO_COMMIT_STORE) { memcpy(stored, blob, len); stored_len = len; *st = 1; if (*applied) active_src = 1; }
+    if (flags & HPROTO_COMMIT_STORE) {
+        if (fail_store) {
+            if (!*applied) return HERR_FLASH;
+            *store_err = HERR_FLASH;
+            return 0;
+        }
+        memcpy(stored, blob, len); stored_len = len; *st = 1; if (*applied) active_src = 1;
+    }
     return 0;
 }
 
@@ -78,7 +93,18 @@ static uint16_t live_get(void *c, uint16_t first, uint16_t count, uint8_t *dst)
 
 static uint16_t stats_get(void *c, uint8_t *dst, uint16_t cap)
 {
-    (void)c; (void)cap;
+    (void)c;
+    if (getenv("HPROTO_SIM_STATS_FULL")) { /* the real encoder with distinctive values, 2 buses */
+        static HeadStats_t st;
+        memset(&st, 0, sizeof st);
+        for (int b = 0; b < 2; b++) {
+            st.bus[b].rx_frames = 100u + b; st.bus[b].rx_matched = 200u + b; st.bus[b].rx_dropped = 300u + b; st.bus[b].fifo_lost = 400u + b;
+            st.bus[b].tx_frames = 500u + b; st.bus[b].tx_dropped = 600u + b; st.bus[b].bus_off = (uint8_t)b; st.bus[b].passive = (uint8_t)(1 - b);
+        }
+        for (int h = 0; h < 8; h++) st.hub_lost[h] = 700u + h;
+        st.rx_nobus = 21; st.rx_ring_overrun = 22; st.rx_ring_high = 23;
+        return Hproto_EncodeStats(&st, 2, dst, cap);
+    }
     memset(dst, 0, 1 + 18 + 1 + 32);
     dst[0] = 1;
     dst[1] = 5; dst[5] = 4; dst[9] = 1; dst[13] = 2; dst[17] = 0; dst[18] = 1; /* rx=5 matched=4 dropped=1 lost=2 bus_off=0 passive=1 */
@@ -123,6 +149,7 @@ static void on_line(void *c, const char *line)
 
 int main(void)
 {
+    fail_store = getenv("HPROTO_SIM_FAIL_STORE") != NULL;
     Hproto_Init(&proto, &ops, NULL, stage, sizeof stage);
     HframeRx_Init(&rx, on_msg, on_line, NULL);
     uint8_t buf[256];

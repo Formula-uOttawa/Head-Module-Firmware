@@ -1,4 +1,5 @@
-/* Host harness for the firmware decode path: decode_sim <blob>; then stdin lines "bus id ext hexdata now". */
+/* Host harness for the firmware decode path: decode_sim <blob>; then stdin lines "bus id ext hexdata now" (feed a frame and update
+   staleness at `now`) or "s now" (only update staleness). Payloads longer than 64 bytes are cut like the firmware does. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,16 +24,23 @@ int main(int argc, char **argv)
     fflush(stdout);
     if (st != HEAD_CFG_OK) return 1;
     HeadDecode_Reset(&live, &stats);
-    char line[512];
+    char line[1024];
     while (fgets(line, sizeof line, stdin)) {
         unsigned bus, ext;
         unsigned long id, now;
-        char hexd[200];
-        if (sscanf(line, "%u %lx %u %199s %lu", &bus, &id, &ext, hexd, &now) != 5) break;
-        uint8_t d[64];
-        size_t len = strlen(hexd) / 2;
-        for (size_t i = 0; i < len; i++) { unsigned b; sscanf(hexd + 2 * i, "%2x", &b); d[i] = (uint8_t)b; }
-        int h = HeadDecode_Process(&cfg, &live, &stats, (uint8_t)bus, (uint32_t)id, ext != 0, d, (uint8_t)len, (uint32_t)now);
+        char hexd[600];
+        int h = 0;
+        if (line[0] == 's') {
+            if (sscanf(line + 1, "%lu", &now) != 1) break;
+        } else {
+            if (sscanf(line, "%u %lx %u %599s %lu", &bus, &id, &ext, hexd, &now) != 5) break;
+            uint8_t d[64];
+            memset(d, 0xEE, sizeof d); /* like the ISR buffer: stale bytes beyond the received length */
+            size_t len = strlen(hexd) / 2;
+            if (len > sizeof d) len = sizeof d;
+            for (size_t i = 0; i < len; i++) { unsigned b; sscanf(hexd + 2 * i, "%2x", &b); d[i] = (uint8_t)b; }
+            h = HeadDecode_Process(&cfg, &live, &stats, (uint8_t)bus, (uint32_t)id, ext != 0, d, (uint8_t)len, (uint32_t)now);
+        }
         HeadDecode_UpdateStale(&cfg, &live, (uint32_t)now);
         printf("%d", h);
         for (unsigned s = 0; s < cfg.channel_count; s++) printf(" %08x:%d", live.values[s].u, live.stale[s]);

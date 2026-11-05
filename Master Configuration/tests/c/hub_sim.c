@@ -27,21 +27,31 @@ static void get_info(void *c, HubInfo_t *i)
     i->tec = 3; i->rec = 1; i->bus_off = 0; i->passive = 1;
     i->sysclk_hz = 160000000u; i->fdcan_kernel_hz = 80000000u;
     i->tx_ok = 100; i->tx_fail = 2; i->tx_skipped = 7; i->tx_invalid = 0;
+    /* appended INFO fields (bytes 56..87) */
+    i->tx_drop_full = 11; i->afe_spi_err = 12; i->afe_resyncs = 13; i->afe_drdy_overrun = 14;
+    i->rx_overflow = 15; i->uart_err = 16; i->uart_tx_fail = 17;
+    i->tcan_init_status = 0x60; i->afe_status = 0x3F; i->inputs = 0x15;
 }
 
 static uint16_t live_get(void *c, uint16_t first, uint16_t count, uint8_t *dst)
 {
     (void)c;
     uint16_t w = 0;
-    for (; w < count && first + w < 24; w++) {
+    for (; w < count && first + w < HUB_LIVE_SLOTS; w++) {
         uint32_t v = 1000u + first + w;
         for (int k = 0; k < 4; k++) dst[5 * w + k] = (uint8_t)(v >> (8 * k));
-        dst[5 * w + 4] = 0;
+        dst[5 * w + 4] = (uint8_t)((first + w) == 5 ? 1 : 0); /* slot 5 reports stale */
     }
     return w;
 }
 
-static void do_reboot(void *c) { (void)c; }
+static void do_reboot(void *c)
+{
+    (void)c;
+    static const char msg[] = "ascii:reboot-called\n";
+    ssize_t r = write(1, msg, sizeof msg - 1);
+    (void)r;
+}
 
 static const HubProtoOps_t ops = { get_info, live_get, do_reboot };
 

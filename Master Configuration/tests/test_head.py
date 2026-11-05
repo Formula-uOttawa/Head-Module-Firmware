@@ -27,7 +27,9 @@ def sig(cid, start, n, **kw):
 
 
 def sample_project():
-    chans = [hubch(1, 1), hubch(2, 2, signed=True, raw_bytes=1), hubch(3, 3, raw_bytes=4), hubch(4, 4, sample_rate_hz=10)]
+    # analog channels carry the raw 24-bit signed code (3 bytes); the digital ones keep 1-, 2- and 4-byte (unsigned) decode covered
+    chans = [hubch(1, 1, raw_bytes=3, signed=True), hubch(2, 21, sensor_type=SensorType.DIGITAL, signed=True, raw_bytes=1),
+             hubch(3, 23, sensor_type=SensorType.DIGITAL, raw_bytes=4), hubch(4, 22, sensor_type=SensorType.DIGITAL, raw_bytes=2, sample_rate_hz=10)]
     chans += [canch(i) for i in range(10, 18)]
     f1 = RxFrame(name="ecu1", bus="EXT1", can_id=0x123, dlc=8, timeout_ms=200, signals=[
         sig(10, 0, 16, multiplier=0.1, offset=-40.0),
@@ -93,7 +95,7 @@ def test_python_decode_mux_and_float():
     assert 13 not in out and out[14] == 0x1234 * 2.0 and out[15] == pytest.approx(2.5 * 1.5 + 1.0)
 
 
-def build_sim(tmp_path, harness, sources):
+def build_sim(tmp_path, harness, sources, libs=()):
     """Compile a host test harness against the real firmware sources in ../Common."""
     from pathlib import Path
     common = Path(__file__).resolve().parents[2] / "Common"
@@ -101,7 +103,7 @@ def build_sim(tmp_path, harness, sources):
     hub = common.parent.parent / "SensorHubV1" / "Core"  # hub sources are named hub_*.c; everything else is shared Common code
     srcs = [str((hub if f.startswith("hub_") else common) / "Src" / f) for f in sources]
     cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", f"-I{common / 'Inc'}", f"-I{hub / 'Inc'}", "-o", str(exe),
-           str(Path(__file__).parent / "c" / f"{harness}.c"), *srcs]
+           str(Path(__file__).parent / "c" / f"{harness}.c"), *srcs, *libs]
     r = subprocess.run(cmd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return exe
@@ -297,11 +299,15 @@ def test_firmware_tx_schedule(tmp_path):
     from canharness import blob as blobmod
     (tmp_path / "cfg.blob").write_bytes(blobmod.build(tx_project()))
     exe = build_sim(tmp_path, "encode_sim", ["head_cfg.c", "head_decode.c", "head_encode.c"])
-    # motec1 every 10 ms, motec2 every 100 ms; the bus is busy at t=30 (retried), and a 1 s stall must not burst
-    script = ["t 0", "t 5", "t 10", "b 1", "t 20", "b 0", "t 21", "t 100", "t 1100", "t 1101"]
+    # motec1 every 10 ms, motec2 every 100 ms. The frames are staggered by index (motec2 starts 1 ms after motec1), a busy bus keeps
+    # the phase and retries every pass until the next period would start (only then the slot is skipped and counted), and a
+    # 1 s stall must not burst
+    script = ["t 0", "t 5", "t 10", "b 1", "t 20", "b 0", "t 21", "t 100", "t 1100", "t 1101",
+              "b 1", "t 1110", "t 1119", "t 1120", "b 0", "t 1130"]
     r = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(script) + "\n", capture_output=True, text=True)
     out = r.stdout.splitlines()
     sent = [l.count("[") for l in out[1:-1]]
-    # t=0 both; 5 none; 10 motec1; 20 bus busy; 21 retried; 100 both (stall resync); 1100 both; 1101 no burst
-    assert sent == [2, 0, 1, 0, 1, 2, 2, 0]
-    assert "dropped=" in out[-1] and not out[-1].endswith("dropped=0")
+    # t=0 motec1; 5 motec2 (due at 1); 10 motec1; 20 bus busy; 21 retried; 100 motec1 (stall resync); 1100 both; 1101 none;
+    # 1110..1119 busy (retrying, nothing dropped yet); 1120 one full period late -> skipped; 1130 sent again
+    assert sent == [1, 1, 1, 0, 1, 1, 2, 0, 0, 0, 0, 1]
+    assert out[-1].endswith("dropped=1")

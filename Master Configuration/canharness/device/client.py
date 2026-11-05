@@ -105,8 +105,10 @@ class DeviceClient:
             if progress: progress(min(off + chunk, len(blob)), len(blob))
         flags = (m.COMMIT_APPLY if apply else 0) | (m.COMMIT_STORE if store else 0)
         p = self.request(m.CFG_COMMIT, bytes([flags]), timeout=20.0)  # a flash erase can take seconds
-        applied, stored, h = struct.unpack("<BBQ", p)
-        return {"applied": bool(applied), "stored": bool(stored), "hash": f"{h:016x}"}
+        applied, stored, h = struct.unpack_from("<BBQ", p)
+        store_err = p[10] if len(p) > 10 else 0  # trailing byte added later: flash write failed after a successful apply
+        return {"applied": bool(applied), "stored": bool(stored), "hash": f"{h:016x}",
+                "store_error": m.ERRORS.get(store_err, str(store_err)) if store_err else None}
 
     def read_config(self, source: str = "active") -> bytes:
         src, out, total, off = (0 if source == "active" else 1), bytearray(), None, 0
@@ -133,7 +135,7 @@ class DeviceClient:
         self.request(m.SNIFF_SET, bytes([bus, int(enable)]))
 
     def reboot(self) -> None:
-        self.request(m.REBOOT)
+        self.request(m.REBOOT, struct.pack("<I", m.REBOOT_MAGIC))
 
 
 def _pump(self, timeout: float = 0.05) -> None:
