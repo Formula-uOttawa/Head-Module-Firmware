@@ -12,6 +12,7 @@ Legend: ✅ done · 🔧 in progress / needs your input · 📋 planned · 💡 
 - 🔧 **Test Motec transmit on hardware:** define a frame in the CAN transmit tab, upload, and check the sniffer/Motec receives it. Motec's byte order/scale settings: use the tab's Export CSV. Values are sent raw (hub channels = ADC counts) with your multiplier/offset.
 
 - ✅ **Config ownership decided (recommendation, say if you disagree):** the app/project is the single source of truth; head and hubs are both targets. Hub config goes to the hub directly over its UART (bench) or via the head over CAN; devices report their config hash so outdated ones are visible. No hub-to-head propagation. Details in `docs/protocol.md` section 4.
+- 🔧 **Hub AFE B does not answer on this board** (boot line `afe:B:stage=12`, status `0x35`; chip looks off-centre on its pad, check solder/CS_B PC8/DOUT/supplies). The hub keeps running on AFE A: the failed init stays a severe error (boot line, INFO `AFE fault` flag, red status on the Device tab, retried every 5 s, `afe:status:` line if it recovers) and B's channels are sent on CAN as the "no data" code -8388608 (also for any AFE channel that goes stale). The head/dash must treat -8388608 as invalid (dash JSON: `no_data_value`).
 - 🔧 **Hub PA2 (USART2 RX) pin looks dead**, so the hub can send but not receive over UART; hub config goes over CAN for now (UART fix: replace the MCU, or wire the ST-LINK TX to PB3 and receive there).
 
 ## Code review fixes (2026-11-05): implemented, NOT yet run on hardware
@@ -90,8 +91,9 @@ Everything from the review (`reviews/*.md`; `STATUS` list before this change) wa
 - 💡 Show the on-device config diff against the project
 
 ## Notes
-- Nothing is committed from this work; see `git status`.
+- Head repo: all work so far is committed (latest: review fixes). The hub (`../SensorHubV1`) is its own git repo now (single "Re init" commit plus whatever you commit next).
 - The web server does not hot-reload: restart `python -m canharness.web` after pulling/changing app code (a stale server makes the Device page report "HTTP 404 ... server is older than this page").
+- **The head has two images: flash BOTH `CM7` and `CM4`, then power-cycle.** Flashing only the CM7 leaves an old CM4 image, and the shared-memory layout changed: symptoms are `CFG_BEGIN busy`, `SNIFF_SET out of range`, `CFG_READ unsupported` (the CM7 sees no ready CM4).
 - Build output under `*/Debug/` is tracked in git, so build in CubeIDE or use `tools/fw_build_check.sh`.
 - `CM4/Core/Src/main.c` and `CM7/Core/Src/main.c` use CRLF line endings.
 - Permission needed before touching: `.ioc`, generated code, linker scripts, `.cproject` (granted once: CM7 FLASH 896K, `../../Common/Inc` include path).

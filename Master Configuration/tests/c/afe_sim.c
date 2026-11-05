@@ -24,6 +24,8 @@ static int dma_active, dma_afe;
 static uint8_t *dma_tx, *dma_rx;
 static uint16_t dma_n;
 static int abort_calls, dma_starts;
+static int b_dead;                   /* AFE B does not drive DOUT: reads as zeros, ignores writes */
+static int corrupt_b_reg4;           /* AFE B stores a wrong value in register 4 (read-back mismatch) */
 static int sniff_last_tx_id = -1, sniff_last_tx_len, sniff_last_rx_len, sniff_events;
 
 #define CHECK(cond, ...) do { if (!(cond)) { g_fail++; printf("FAIL line %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -61,6 +63,7 @@ static void model_apply(int afe, const uint8_t *tx, uint8_t *rx, uint16_t n, boo
     char tag[32];
     const char *name = afe ? "B" : "A";
     memset(rx, 0, n);
+    if (afe == 1 && b_dead) return;
     if (n == 1) {
         const char *c = tx[0] == 0x08 ? "START" : tx[0] == 0x0A ? "STOP" : tx[0] == 0x06 ? "RESET" : "CMD";
         snprintf(tag, sizeof tag, "%s:%s", name, c);
@@ -74,7 +77,7 @@ static void model_apply(int afe, const uint8_t *tx, uint8_t *rx, uint16_t n, boo
         logf_(tag);
     } else if ((tx[0] & 0xE0) == 0x40 && apply_wreg) {
         uint8_t reg = tx[0] & 0x1F, cnt = (uint8_t)(tx[1] + 1);
-        for (uint8_t k = 0; k < cnt && 2 + k < n; k++) regs[afe][reg + k] = tx[2 + k];
+        for (uint8_t k = 0; k < cnt && 2 + k < n; k++) regs[afe][reg + k] = (afe == 1 && corrupt_b_reg4 && reg + k == 4) ? (uint8_t)(tx[2 + k] ^ 0x01) : tx[2 + k];
         snprintf(tag, sizeof tag, "%s:WREG", name);
         logf_(tag);
     }
@@ -125,6 +128,7 @@ static void reset_world(void)
     regs[0][1] = regs[1][1] = 0x80;
     regs[0][9] = regs[1][9] = 0x10;
     dev_id[0] = dev_id[1] = 0;
+    corrupt_b_reg4 = 0; b_dead = 0;
     dma_result = HAL_OK; dma_active = 0; abort_calls = 0; dma_starts = 0; cs_low_a = cs_low_b = 0;
     hspi2.Instance = SPI2;
     hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
@@ -257,6 +261,35 @@ int main(void)
     dma_starts = 0;
     drdy(1);
     CHECK(dma_starts == 0 && !cs_low_b, "DRDY of an AFE that did not come up is ignored");
+
+    /* ---- B fails its channel 0 read-back at boot: the failing step is reported and a later retry brings it up ------- */
+    reset_world();
+    corrupt_b_reg4 = 1;
+    CHECK(!AfeInit(), "AfeInit must report the B failure");
+    CHECK(st->init_stage[AFE_B] == AFE_INIT_LOAD_VERIFY && st->init_reg[AFE_B] == 2 && st->init_got[AFE_B] == (uint8_t)(st->init_exp[AFE_B] ^ 0x01),
+          "B stage %u reg %u got %02X exp %02X", st->init_stage[AFE_B], st->init_reg[AFE_B], st->init_got[AFE_B], st->init_exp[AFE_B]);
+    CHECK(st->init_stage[AFE_A] == AFE_INIT_OK && (st->status & AFE_ST_A_RUNNING) && !(st->status & AFE_ST_B_RUNNING), "status 0x%02X", st->status);
+    CHECK(strstr(g_log, "A:START") && !strstr(g_log, "B:START"), "START only for A: %s", g_log);
+    AfeService();                                   /* too early: no retry before AFE_INIT_RETRY_MS */
+    CHECK(st->init_retries == 0, "retried too early");
+    corrupt_b_reg4 = 0;                             /* the fault goes away */
+    g_tick += 5100;
+    AfeService();
+    CHECK(st->init_retries == 1 && (st->status & AFE_ST_B_RUNNING) && st->init_stage[AFE_B] == AFE_INIT_OK, "retry: status 0x%02X stage %u retries %u",
+          st->status, st->init_stage[AFE_B], st->init_retries);
+    CHECK(strstr(g_log, "B:START"), "B started by the retry: %s", g_log);
+    CHECK(!cs_low_a && !cs_low_b, "bus released after the retry");
+    dma_starts = 0;
+    drdy(1);
+    CHECK(dma_starts == 1, "DRDY of B is serviced after the retry");
+    dma_complete(9);
+
+    /* ---- B does not answer at all (reads zeros, the ADS124S08 ID is 000 too): reported as no response, not as "ID ok" ---- */
+    reset_world();
+    b_dead = 1;
+    CHECK(!AfeInit(), "AfeInit must fail when B is dead");
+    CHECK(st->init_stage[AFE_B] == AFE_INIT_NO_RESPONSE, "B stage %u", st->init_stage[AFE_B]);
+    CHECK(!(st->status & (AFE_ST_B_ID_OK | AFE_ST_B_RUNNING)) && (st->status & AFE_ST_A_ID_OK) && (st->status & AFE_ST_A_RUNNING), "status 0x%02X", st->status);
 
     /* ---- SPI2 not in mode 1: refuse to start ------------------------------------------------------------------------ */
     reset_world();

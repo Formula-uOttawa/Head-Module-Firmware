@@ -28,7 +28,9 @@ def generate_dash(project: Project) -> str:
             "fault_high": ch.fault_high,
             "calibration": {"x": ch.cal_x, "y": ch.cal_y} if ch.cal_x else None,
             "value_type": "f32" if ch.source == "can_rx" else ("i32" if ch.signed else "u32"),
-            "raw": {"bytes": ch.raw_bytes, "signed": ch.signed, "endian": "little"},
+            "raw": {"bytes": ch.raw_bytes, "signed": ch.signed, "endian": "little",
+                    # analog hub channels without a fresh AFE sample are sent as the minimum 24-bit code ("no data")
+                    **({"no_data_value": -8388608} if ch.source == "hub" and ch.sensor_type.value != "digital" else {})},
         }
         if ch.channel_id in where:
             fr, p = where[ch.channel_id]

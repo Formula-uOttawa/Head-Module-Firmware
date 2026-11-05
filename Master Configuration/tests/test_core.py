@@ -128,7 +128,7 @@ def test_dash_json_roundtrip():
     d = json.loads(generate_dash(import_yaml(LEGACY_YAML)))
     first = d["channels"][0]
     assert min(c["frame"]["byte_offset"] for c in d["channels"] if c["frame"]["id_base"] == 0x00200000) == 4  # after the timestamp
-    assert first["frame"]["id_base"] == 0x00200000 and first["raw"] == {"bytes": 3, "signed": True, "endian": "little"}
+    assert first["frame"]["id_base"] == 0x00200000 and first["raw"] == {"bytes": 3, "signed": True, "endian": "little", "no_data_value": -8388608}
     assert d["config_hash"]
 
 

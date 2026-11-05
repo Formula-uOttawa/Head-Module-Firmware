@@ -51,7 +51,7 @@ TCAN_INIT_BITS = {0x01: "watchdog disable needed a retry", 0x02: "watchdog could
 HEAD_TCAN_INIT_BITS = {0x01: "watchdog disable needed a retry", 0x02: "watchdog could not be disabled", 0x04: "SBC init failed",
                        0x08: "could not enter normal mode", 0x10: "standby watchdog not disabled", 0x20: "warm start",
                        0x40: "VCAN not in regulation", 0x80: "CAN transceiver not enabled"}
-AFE_STATUS_BITS = {0x01: "AFE A id ok", 0x02: "AFE B id ok", 0x04: "AFE A running", 0x08: "AFE B running",
+AFE_STATUS_BITS = {0x01: "AFE A responds", 0x02: "AFE B responds", 0x04: "AFE A running", 0x08: "AFE B running",
                    0x10: "AFE A config ok", 0x20: "AFE B config ok", 0x80: "SPI2 not in mode 1"}
 
 
