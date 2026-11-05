@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from .. import blob as blobmod
 from .client import DeviceClient, SerialTransport, Transport
-from .messages import DeviceError
+from .messages import DeviceError, WrongDevice
 
 
 def list_ports() -> list[dict]:
@@ -43,6 +43,7 @@ class DeviceSession:
             t = self.factory(port, baud)
             self.client = DeviceClient(t, timeout=1.5, on_sniff=self._on_sniff, on_text=self._on_text)
             try:
+                self.client.device_type = self.client.ident()["device_type"]
                 info = self.client.info()
             except Exception:
                 self.disconnect()
@@ -67,6 +68,16 @@ class DeviceSession:
         frame = dict(frame, seq=self.sniff_seq, data=frame["data"].hex())
         self.sniff_frames.append(frame)
 
+    @property
+    def device_type(self) -> Optional[str]:
+        return self.client.device_type if self.client else None
+
+    def _head(self, what: str) -> DeviceClient:
+        c = self._c()
+        if c.device_type != "head":
+            raise WrongDevice(what, c.device_type)
+        return c
+
     def _c(self) -> DeviceClient:
         if self.client is None:
             raise ConnectionError("not connected")
@@ -83,7 +94,7 @@ class DeviceSession:
             c = self._c()
             info = c.info()
             try:
-                stats = c.stats()
+                stats = c.stats() if c.device_type == "head" else None
             except Exception:  # e.g. CM4 not running yet; INFO alone proves the link, so never fail the poll over stats
                 stats = None
             return {"port": self.port, "info": info, "stats": stats, "text_last": self.text_seq,
@@ -107,15 +118,15 @@ class DeviceSession:
     def upload(self, blob: bytes, apply: bool, store: bool) -> dict:
         with self.lock:
             self._cfg_cache.clear()
-            return self._c().upload_config(blob, apply=apply, store=store)
+            return self._head("config upload").upload_config(blob, apply=apply, store=store)
 
     def download(self, source: str = "active") -> bytes:
         with self.lock:
-            return self._c().read_config(source)
+            return self._head("config read").read_config(source)
 
     def clear(self, revert: bool) -> None:
         with self.lock:
-            self._c().clear_config(revert)
+            self._head("config clear").clear_config(revert)
             self._cfg_cache.clear()
 
     def reboot(self) -> None:
@@ -125,7 +136,7 @@ class DeviceSession:
 
     def stats(self) -> dict:
         with self.lock:
-            return self._c().stats()
+            return self._head("bus statistics").stats()
 
     def _active_channels(self, info: dict) -> list[tuple]:
         key = info["active_hash"]
@@ -138,6 +149,9 @@ class DeviceSession:
         with self.lock:
             c = self._c()
             info = c.info()
+            if c.device_type == "hub":  # raw value per connector-pin slot (slot = pin - 1); names come from the project
+                r = c.live(0, 24)
+                return {"device_type": "hub", "slots": [{"slot": i, "value": v} for i, v in enumerate(r["raw"])]}
             chans = self._active_channels(info)
             rows, slot = [], 0
             while slot < len(chans):
@@ -150,11 +164,11 @@ class DeviceSession:
                              else struct.unpack("<i", struct.pack("<I", raw))[0] if vtype == 1 else raw)
                     rows.append({"slot": slot, "channel_id": cid, "value": value, "stale": stale})
                     slot += 1
-            return {"hash": info["active_hash"], "channels": rows}
+            return {"device_type": "head", "hash": info["active_hash"], "channels": rows}
 
     def sniff(self, bus: int, enable: bool) -> None:
         with self.lock:
-            self._c().sniff(bus, enable)
+            self._head("CAN sniffer").sniff(bus, enable)
 
     def sniff_poll(self, since: int) -> dict:
         with self.lock:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import struct
 
-INFO, CFG_BEGIN, CFG_CHUNK, CFG_COMMIT, CFG_READ, CFG_CLEAR = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06
+INFO, CFG_BEGIN, CFG_CHUNK, CFG_COMMIT, CFG_READ, CFG_CLEAR, IDENT = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
+DEVICE_HEAD, DEVICE_HUB = 1, 2
 LIVE_GET, STATS_GET, SNIFF_SET, SNIFF_FRAME, REBOOT, ERROR = 0x10, 0x11, 0x30, 0xB1, 0x70, 0xFF
 COMMIT_APPLY, COMMIT_STORE = 0x01, 0x02
 CHUNK_MAX = 240
 
-NAMES = {INFO: "INFO", CFG_BEGIN: "CFG_BEGIN", CFG_CHUNK: "CFG_CHUNK", CFG_COMMIT: "CFG_COMMIT", CFG_READ: "CFG_READ",
+NAMES = {INFO: "INFO", IDENT: "IDENT", CFG_BEGIN: "CFG_BEGIN", CFG_CHUNK: "CFG_CHUNK", CFG_COMMIT: "CFG_COMMIT", CFG_READ: "CFG_READ",
          CFG_CLEAR: "CFG_CLEAR", LIVE_GET: "LIVE_GET", STATS_GET: "STATS_GET", SNIFF_SET: "SNIFF_SET", REBOOT: "REBOOT"}
 
 
@@ -27,9 +28,35 @@ class DeviceError(Exception):
         self.request_type, self.code = request_type, code
 
 
+class WrongDevice(DeviceError):
+    """The connected board does not implement the requested operation (e.g. config upload on a hub)."""
+
+    def __init__(self, what: str, device: str):
+        Exception.__init__(self, f"{what} is not supported by a {device} module")
+        self.request_type, self.code = 0, 8
+
+
+def parse_ident(p: bytes) -> dict:
+    dev, proto, fw, inst = struct.unpack_from("<BBHB", p)
+    return {"device_type": "hub" if dev == DEVICE_HUB else "head" if dev == DEVICE_HEAD else f"unknown({dev})",
+            "proto_version": proto, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "hub_id": None if inst == 0xFF else inst,
+            "uid": p[6:18].hex()}
+
+
+def parse_hub_info(p: bytes) -> dict:
+    proto, _, fw, up, hub_id, flags, na, nb, nd, tcan, tec, rec, bus_off, passive = struct.unpack_from("<BBHIBBBBBBBBBB", p)
+    sysclk, kernel, ok, fail, skipped, invalid = struct.unpack_from("<IIIIII", p, 20)
+    return {"device_type": "hub", "proto_version": proto, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
+            "hub_id": None if hub_id == 0xFF else hub_id, "can_running": bool(flags & 1),
+            "sensors": {"afe_a": na, "afe_b": nb, "digital": nd}, "tcan_int": tcan,
+            "can": {"tec": tec, "rec": rec, "bus_off": bool(bus_off), "error_passive": bool(passive)},
+            "sysclk_hz": sysclk, "fdcan_kernel_hz": kernel,
+            "tx": {"ok": ok, "failed": fail, "skipped": skipped, "invalid": invalid}, "uid": p[44:56].hex()}
+
+
 def parse_info(p: bytes) -> dict:
     (proto, blob, fw, up, ah, sh, src, cm4, maxch, maxblob, chans) = struct.unpack_from("<BBHIQQBBHHH", p)
-    return {"proto_version": proto, "blob_version": blob, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
+    return {"device_type": "head", "proto_version": proto, "blob_version": blob, "fw_version": f"{fw >> 8}.{fw & 0xFF}", "uptime_ms": up,
             "active_hash": f"{ah:016x}", "stored_hash": f"{sh:016x}" if sh else None,
             "active_source": ["default", "flash", "uploaded"][src] if src < 3 else src, "cm4_alive": bool(cm4),
             "max_channels": maxch, "max_blob": maxblob, "channel_count": chans, "uid": p[32:44].hex(),

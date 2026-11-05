@@ -98,8 +98,10 @@ def build_sim(tmp_path, harness, sources):
     from pathlib import Path
     common = Path(__file__).resolve().parents[2] / "Common"
     exe = tmp_path / harness
-    cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", f"-I{common / 'Inc'}", "-o", str(exe),
-           str(Path(__file__).parent / "c" / f"{harness}.c"), *[str(common / "Src" / f) for f in sources]]
+    hub = common.parent.parent / "SensorHubV1" / "Core"  # hub sources are named hub_*.c; everything else is shared Common code
+    srcs = [str((hub if f.startswith("hub_") else common) / "Src" / f) for f in sources]
+    cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", f"-I{common / 'Inc'}", f"-I{hub / 'Inc'}", "-o", str(exe),
+           str(Path(__file__).parent / "c" / f"{harness}.c"), *srcs]
     r = subprocess.run(cmd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return exe

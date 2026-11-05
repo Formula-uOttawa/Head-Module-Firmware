@@ -49,6 +49,7 @@ def generate_hub(project: Project, hub_id: int) -> str:
         "DO NOT EDIT - regenerate from the project file",
         "--------------------------------",
         "*/",
+        f"const uint8_t HUB_ID = {hub_id};",
         f"volatile uint32_t LIVE_SENSOR_DATA[MAX_SENSORS];  // one slot per connector pin (pin - 1)",
         "",
     ]

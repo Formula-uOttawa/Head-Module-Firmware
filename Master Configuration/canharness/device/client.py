@@ -47,6 +47,7 @@ class DeviceClient:
         self.seq = 0
         self.on_text, self.on_sniff = on_text, on_sniff
         self.pending: list = []
+        self.device_type = "head"  # set by ident() on connect
 
     def request(self, mtype: int, payload: bytes = b"", timeout: Optional[float] = None) -> bytes:
         self.seq = (self.seq + 1) & 0xFF or 1
@@ -80,7 +81,18 @@ class DeviceClient:
         raise TimeoutError(f"device did not answer {m.name(mtype)}: {seen}")
 
     # --- high level -----------------------------------------------------------------------------------------
+    def ident(self) -> dict:
+        """Which board is this? Head firmware from before IDENT existed answers 'unsupported'; that means a head."""
+        try:
+            return m.parse_ident(self.request(m.IDENT))
+        except m.DeviceError as e:
+            if e.code not in (1, 8):
+                raise
+            return {"device_type": "head", "proto_version": 1, "fw_version": None, "hub_id": None, "uid": None}
+
     def info(self) -> dict:
+        if getattr(self, "device_type", "head") == "hub":
+            return m.parse_hub_info(self.request(m.INFO))
         return m.parse_info(self.request(m.INFO))
 
     def upload_config(self, blob: bytes, apply: bool = True, store: bool = False,

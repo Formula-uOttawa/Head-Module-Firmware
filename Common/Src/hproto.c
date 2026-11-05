@@ -73,6 +73,18 @@ size_t Hproto_Handle(Hproto_t *p, const uint8_t *msg, size_t len, uint8_t *resp,
         wr32(out + 44, i.fdcan_kernel_hz);
         return reply(type, seq, resp, 48);
     }
+    case HMSG_IDENT: { /* same layout on the hub: u8 device type, u8 proto, u16 fw, u8 instance (0xFF none), u8 rsvd, u8 uid[12] */
+        HprotoInfo_t i;
+        memset(&i, 0, sizeof i);
+        ops->get_info(p->ctx, &i);
+        out[0] = HPROTO_DEVICE_HEAD;
+        out[1] = HPROTO_VERSION;
+        wr16(out + 2, i.fw_version);
+        out[4] = 0xFF;
+        out[5] = 0;
+        memcpy(out + 6, i.uid, 12);
+        return reply(type, seq, resp, 18);
+    }
     case HMSG_CFG_BEGIN: {
         if (n != 8)
             return error(type, seq, HERR_BAD_REQUEST, resp);
