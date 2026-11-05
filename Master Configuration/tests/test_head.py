@@ -93,52 +93,41 @@ def test_python_decode_mux_and_float():
     assert 13 not in out and out[14] == 0x1234 * 2.0 and out[15] == pytest.approx(2.5 * 1.5 + 1.0)
 
 
-@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
-def test_generated_c_matches_reference(tmp_path):
-    p = sample_project()
-    files = generate_head(p)
-    for n, t in files.items():
-        (tmp_path / n).write_text(t)
-    (tmp_path / "main.c").write_text(r'''
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "head_config.h"
-int main(void) {
-    char line[512]; Head_Init();
-    while (fgets(line, sizeof line, stdin)) {
-        unsigned bus, ext; unsigned long id; char hexd[200]; unsigned long now;
-        if (sscanf(line, "%u %lx %u %199s %lu", &bus, &id, &ext, hexd, &now) != 5) break;
-        uint8_t d[64]; size_t n = strlen(hexd) / 2;
-        for (size_t i = 0; i < n; i++) { unsigned b; sscanf(hexd + 2 * i, "%2x", &b); d[i] = (uint8_t)b; }
-        int h = Head_ProcessFrame(bus, id, ext, d, (uint8_t)n, now);
-        printf("%d", h);
-        for (int s = 0; s < HEAD_CHANNEL_COUNT; s++) printf(" %08x:%d", g_head_values[s].u, Head_ChannelIsStale(s, now));
-        printf("\n");
-    }
-    return 0;
-}''')
-    exe = tmp_path / "t"
-    r = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-o", str(exe), *map(str, tmp_path.glob("*.c"))], capture_output=True, text=True)
+def build_sim(tmp_path, harness, sources):
+    """Compile a host test harness against the real firmware sources in ../Common."""
+    from pathlib import Path
+    common = Path(__file__).resolve().parents[2] / "Common"
+    exe = tmp_path / harness
+    cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", f"-I{common / 'Inc'}", "-o", str(exe),
+           str(Path(__file__).parent / "c" / f"{harness}.c"), *[str(common / "Src" / f) for f in sources]]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+    return exe
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
+def test_firmware_decode_matches_reference(tmp_path):
+    from canharness import blob as blobmod
+    from canharness.packing import pack
+    p = sample_project()
+    blob_file = tmp_path / "cfg.blob"
+    blob_file.write_bytes(blobmod.build(p))
+    exe = build_sim(tmp_path, "decode_sim", ["head_cfg.c", "head_decode.c"])
 
     rng = random.Random(7)
     chans = sorted((c for c in p.channels if c.enabled), key=lambda c: c.channel_id)
     slot = {c.channel_id: i for i, c in enumerate(chans)}
-    hub_ids = [0x00200000, 0x00800000]  # 200 Hz idx0, 10 Hz idx0 (+ counter bits must be ignored)
-    vals = {}  # slot -> ("u"|"i"|"f", value)
+    frames, _ = pack(p)
+    fr200 = next(f for f in frames if f.rate_hz == 200)
+    vals = {}  # slot -> (kind, value)
     lines, expected = [], []
     for n in range(300):
         pick = rng.randrange(3)
         if pick == 0:
-            fid = hub_ids[0] | (rng.randrange(256) << 8)
+            fid = fr200.id_base | (rng.randrange(256) << 8)  # frame counter bits must be ignored
             data = bytes(rng.randrange(256) for _ in range(16))
             lines.append(f"0 {fid:x} 1 {data.hex()} {n}")
-            # channels 1 (u16 @4), 2 (i8 @6), 3 (u32 @8)  -- offsets come from the packer
-            from canharness.packing import pack
-            frames, _ = pack(p)
-            fr = next(f for f in frames if f.rate_hz == 200)
-            for pl in fr.placements:
+            for pl in fr200.placements:
                 raw = int.from_bytes(data[pl.offset:pl.offset + pl.length], "little")
                 if pl.channel.signed and raw & (1 << (8 * pl.length - 1)):
                     raw -= 1 << (8 * pl.length)
@@ -150,19 +139,167 @@ int main(void) {
                 data = bytes([rng.randrange(3)]) + data[1:]
                 if rng.random() < .5:
                     data = data[:4] + struct.pack("<f", rng.uniform(-1000, 1000))
-            lines.append(f"{1} {f.can_id:x} {int(f.extended)} {data.hex()} {n}")
+            lines.append(f"1 {f.can_id:x} {int(f.extended)} {data.hex()} {n}")
             for cid, v in rxdecode.decode_frame(f, data).items():
                 vals[slot[cid]] = ("f", v)
         expected.append(dict(vals))
-    out = subprocess.run([str(exe)], input="\n".join(lines) + "\n", capture_output=True, text=True, check=True).stdout.splitlines()
+    out = subprocess.run([str(exe), str(blob_file)], input="\n".join(lines) + "\n", capture_output=True, text=True, check=True).stdout.splitlines()
+    assert out[0].startswith("cfg 0 ok")
+    out = out[1:]
     assert len(out) == len(lines)
     for line, exp in zip(out, expected):
         cells = line.split()[1:]
-        for s, (kind, v) in exp.items():
-            word = int(cells[s].split(":")[0], 16)
+        for s_, (kind, v) in exp.items():
+            word = int(cells[s_].split(":")[0], 16)
             if kind == "f":
                 got = struct.unpack("<f", word.to_bytes(4, "little"))[0]
                 assert got == pytest.approx(v, rel=1e-5, abs=1e-4) or (math.isnan(got) and math.isnan(v))
             else:
                 got = word - (1 << 32) if kind == "i" and word >= 1 << 31 else word
                 assert got == v
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
+def test_firmware_staleness_and_hub_loss(tmp_path):
+    from canharness import blob as blobmod
+    from canharness.packing import pack
+    p = sample_project()
+    (tmp_path / "cfg.blob").write_bytes(blobmod.build(p))
+    exe = build_sim(tmp_path, "decode_sim", ["head_cfg.c", "head_decode.c"])
+    fr200 = next(f for f in pack(p)[0] if f.rate_hz == 200)
+    ids = [fr200.id_base | (c << 8) for c in (10, 11, 14)]  # counter 10, 11, then 14 -> 2 frames lost
+    data = bytes(16).hex()
+    lines = [f"0 {i:x} 1 {data} {t}" for i, t in zip(ids, (0, 1, 2))] + [f"0 {ids[0]:x} 1 {data} 5000"]
+    out = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(lines) + "\n", capture_output=True, text=True).stdout.splitlines()[1:]
+    assert out[1].endswith("lost=0") and out[2].endswith("lost=2")
+    first = out[0].split()[1]
+    assert first.endswith(":0")                      # just received
+    assert out[3].split()[1].endswith(":0")          # re-received at 5000
+    assert out[3].split()[-2].endswith(":1")         # a never-received CAN channel stays stale
+
+
+# ---- bit timing ------------------------------------------------------------------------------------------------------
+
+def test_bit_timing_known_values():
+    from canharness.cantiming import compute_timing, achievable, nearby
+    assert compute_timing(51_200_000, 320_000, 800, False) == (1, 128, 31, 31) or compute_timing(51_200_000, 320_000, 800, False)[0] == 1
+    assert achievable(51_200_000, 3_200_000, True) and not achievable(88_000_000, 3_200_000, True)
+    assert 1_600_000 in nearby(88_000_000, 3_200_000, True)
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
+def test_c_timing_matches_python(tmp_path):
+    from canharness.cantiming import compute_timing
+    exe = build_sim(tmp_path, "timing_sim", ["hcan_timing.c"])
+    rng = random.Random(3)
+    cases = [(clk, rate, sp, d) for clk in (51_200_000, 80_000_000, 88_000_000, 40_000_000)
+             for rate in (125_000, 250_000, 320_000, 500_000, 800_000, 1_000_000, 1_600_000, 2_000_000, 3_200_000, 4_000_000, 5_000_000, 8_000_000)
+             for sp, d in ((800, 0), (750, 1))]
+    cases += [(rng.choice((51_200_000, 88_000_000)), rng.randrange(100_000, 9_000_000), rng.choice((700, 800, 875)), rng.randrange(2)) for _ in range(150)]
+    out = subprocess.run([str(exe)], input="\n".join(f"{c} {r} {s} {d}" for c, r, s, d in cases) + "\n", capture_output=True, text=True, check=True).stdout.splitlines()
+    for (clk, rate, sp, d), line in zip(cases, out):
+        py = compute_timing(clk, rate, sp, bool(d))
+        assert line == ("none" if py is None else " ".join(map(str, py))), (clk, rate, sp, d)
+
+
+def test_bus_rate_validation_reports_clock_problem():
+    p = sample_project()
+    assert not errors(validate(p))                     # defaults: 80 MHz on both boards, 320k / 5M hub bus, 500k external
+    p.settings.head_fdcan_kernel_hz, p.settings.hub_fdcan_kernel_hz = 88_000_000, 51_200_000   # the boards as they were before
+    p.buses[0].data_bitrate = 3_200_000
+    msgs = [i.message for i in errors(validate(p))]
+    assert any("data rate 3.2 Mbit/s cannot be generated exactly by the head" in m and "1.6 Mbit/s" in m for m in msgs)
+    p.settings.head_fdcan_kernel_hz = 51_200_000   # if the head's clock matched the hub's, 3.2 Mbit/s would work...
+    msgs = [i.message for i in errors(validate(p))]
+    assert not any("data rate" in m for m in msgs)
+    assert any("500 kbit/s" in m for m in msgs)    # ...but the external bus's 500 kbit/s no longer divides 51.2 MHz
+    p.buses[1].bitrate = 800_000
+    assert not errors(validate(p))
+
+
+# ---- transmit frames (Motec) -----------------------------------------------------------------------------------------
+
+def tx_project():
+    from canharness.model import TxFrame, TxSignal
+    p = sample_project()
+    p.tx_frames = [
+        TxFrame(name="motec1", bus="EXT1", can_id=0x200, dlc=8, rate_hz=100, signals=[
+            TxSignal(channel_id=1, start_bit=7, bit_length=16),                                    # u32 hub value, big endian
+            TxSignal(channel_id=2, start_bit=23, bit_length=8, signed=True, multiplier=2.0),       # i32 hub value, scaled
+            TxSignal(channel_id=10, start_bit=32, bit_length=16, byte_order="intel", multiplier=0.1, offset=-40.0),  # float ch
+            TxSignal(channel_id=12, start_bit=51, bit_length=12, signed=True, multiplier=0.5),
+        ]),
+        TxFrame(name="motec2", bus="EXT1", can_id=0x18FFAA01, extended=True, dlc=8, rate_hz=10, signals=[
+            TxSignal(channel_id=11, start_bit=0, bit_length=32, byte_order="intel", is_float=True, multiplier=1.5, offset=1.0),
+            TxSignal(channel_id=3, start_bit=39, bit_length=32),
+        ]),
+    ]
+    return p
+
+
+def test_tx_validation():
+    from canharness.model import TxFrame, TxSignal
+    assert not errors(validate(tx_project()))
+    p = tx_project()
+    p.tx_frames[0].signals += [TxSignal(channel_id=1, start_bit=7, bit_length=8), TxSignal(channel_id=99, start_bit=0, bit_length=8),
+                               TxSignal(channel_id=4, start_bit=100, bit_length=8), TxSignal(channel_id=4, start_bit=0, bit_length=40),
+                               TxSignal(channel_id=4, start_bit=0, bit_length=8, multiplier=0)]
+    p.tx_frames += [TxFrame(name="dup", bus="EXT1", can_id=0x200), TxFrame(name="hub", bus="HUB", can_id=0x1),
+                    TxFrame(name="nobus", bus="X", can_id=1), TxFrame(name="big", bus="EXT1", can_id=0x800, dlc=9, rate_hz=2000)]
+    msgs = " | ".join(i.message for i in errors(validate(p)))
+    for frag in ["overlaps", "does not exist", "beyond", "bit_length", "multiplier", "duplicate CAN ID", "hub bus", "not defined", "out of range", "DLC 9", "rate must"]:
+        assert frag in msgs, frag
+
+
+def test_tx_encode_reference_roundtrip():
+    f = tx_project().tx_frames[0]
+    data = rxdecode.encode_tx_frame(f, {1: 0x1234, 2: -5, 10: 25.0, 12: -3.0})
+    assert data[0:2] == b"\x12\x34" and data[2] == 0xFD          # -5 / 2.0 = -2.5 -> -3 (half away from zero) = 0xFD
+    assert rxdecode.extract_bits(data, 32, 16, "intel") == 650    # (25 + 40) / 0.1
+    # Motorola frame values survive a decode with the receiver's formula
+    assert rxdecode.extract_bits(data, 7, 16, "motorola") == 0x1234
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
+def test_firmware_tx_matches_reference(tmp_path):
+    from canharness import blob as blobmod
+    p = tx_project()
+    blob_file = tmp_path / "cfg.blob"
+    blob_file.write_bytes(blobmod.build(p))
+    exe = build_sim(tmp_path, "encode_sim", ["head_cfg.c", "head_decode.c", "head_encode.c"])
+    chans = sorted((c for c in p.channels if c.enabled), key=lambda c: c.channel_id)
+    rng = random.Random(11)
+    lines, expected = [], []
+    for _ in range(200):
+        bits, vals = [], {}
+        for c in chans:
+            if c.source == "can_rx":
+                v = rng.choice([0.0, rng.uniform(-500, 500), rng.uniform(-1e6, 1e6)])
+                bits.append(struct.unpack("<I", struct.pack("<f", v))[0]); vals[c.channel_id] = struct.unpack("<f", struct.pack("<f", v))[0]
+            elif c.signed:
+                v = rng.randrange(-200, 200) if rng.random() < .8 else rng.randrange(-2**31, 2**31)
+                bits.append(v & 0xFFFFFFFF); vals[c.channel_id] = float(v)
+            else:
+                v = rng.randrange(0, 70000) if rng.random() < .8 else rng.randrange(0, 2**24)
+                bits.append(v); vals[c.channel_id] = float(v)
+        lines.append("v " + " ".join(f"{b:x}" for b in bits))
+        expected += [rxdecode.encode_tx_frame(f, vals).hex() for f in p.tx_frames]
+    r = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(lines) + "\n", capture_output=True, text=True)
+    out = r.stdout.splitlines()
+    assert out[0].startswith("cfg 0 ok tf=2")
+    assert out[1:1 + len(expected)] == expected
+
+
+@pytest.mark.skipif(not shutil.which("cc"), reason="no host C compiler")
+def test_firmware_tx_schedule(tmp_path):
+    from canharness import blob as blobmod
+    (tmp_path / "cfg.blob").write_bytes(blobmod.build(tx_project()))
+    exe = build_sim(tmp_path, "encode_sim", ["head_cfg.c", "head_decode.c", "head_encode.c"])
+    # motec1 every 10 ms, motec2 every 100 ms; the bus is busy at t=30 (retried), and a 1 s stall must not burst
+    script = ["t 0", "t 5", "t 10", "b 1", "t 20", "b 0", "t 21", "t 100", "t 1100", "t 1101"]
+    r = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(script) + "\n", capture_output=True, text=True)
+    out = r.stdout.splitlines()
+    sent = [l.count("[") for l in out[1:-1]]
+    # t=0 both; 5 none; 10 motec1; 20 bus busy; 21 retried; 100 both (stall resync); 1100 both; 1101 no burst
+    assert sent == [2, 0, 1, 0, 1, 2, 2, 0]
+    assert "dropped=" in out[-1] and not out[-1].endswith("dropped=0")

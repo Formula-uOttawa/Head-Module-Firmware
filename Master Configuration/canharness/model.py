@@ -86,7 +86,8 @@ class Bus(BaseModel):
 
 def default_buses() -> list["Bus"]:
     return [
-        Bus(id="HUB", name="Hub bus", role="hub", type="can_fd", bitrate=320_000, data_bitrate=3_200_000,
+        # 1.6 Mbit/s data: 3.2 Mbit/s cannot be generated exactly from the head's 88 MHz kernel clock (hub: 51.2 MHz)
+        Bus(id="HUB", name="Hub bus", role="hub", type="can_fd", bitrate=320_000, data_bitrate=1_600_000,
             head_peripheral="FDCAN1", std_filters=0, ext_filters=16),
         Bus(id="EXT1", name="External CAN 1", role="external", type="can", bitrate=500_000,
             head_peripheral="FDCAN2", std_filters=16, ext_filters=8),
@@ -119,10 +120,42 @@ class RxFrame(BaseModel):
     signals: list[RxSignal] = Field(default_factory=list)
 
 
+class TxSignal(BaseModel):
+    """A head channel value sent to an external device (e.g. the Motec ECU).
+
+    The receiver reconstructs value = raw * multiplier + offset, so the head sends raw = round((value - offset) / multiplier).
+    """
+
+    channel_id: int  # any enabled channel (hub or can_rx)
+    start_bit: int
+    bit_length: int = 16
+    byte_order: Literal["intel", "motorola"] = "motorola"  # Motec's usual default is big-endian
+    signed: bool = False
+    is_float: bool = False
+    multiplier: float = 1.0
+    offset: float = 0.0
+
+
+class TxFrame(BaseModel):
+    """A periodic frame the head transmits on a bus."""
+
+    name: str
+    bus: str
+    can_id: int
+    extended: bool = False
+    dlc: int = 8
+    rate_hz: float = 50
+    signals: list[TxSignal] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     data_start: int = 4  # bytes 0-3 are the timestamp
     data_end: int = 64  # exclusive; full CAN-FD payload
     supported_rates_hz: list[int] = Field(default_factory=lambda: [10, 100, 200])
+    # FDCAN kernel clocks the boards are (to be) configured with. 80 MHz generates 320 kbit/s, 500 kbit/s and 5 Mbit/s exactly.
+    # The head reports its real clock in INFO, so the Device tab warns if the board differs from this setting.
+    head_fdcan_kernel_hz: int = 80_000_000
+    hub_fdcan_kernel_hz: int = 80_000_000
     udp_ip: str = "192.168.1.10"
     udp_port: int = 5005
 
@@ -135,6 +168,7 @@ class Project(BaseModel):
     buses: list[Bus] = Field(default_factory=default_buses)
     channels: list[Channel] = Field(default_factory=list)
     rx_frames: list[RxFrame] = Field(default_factory=list)
+    tx_frames: list[TxFrame] = Field(default_factory=list)
 
     @field_validator("buses")
     @classmethod

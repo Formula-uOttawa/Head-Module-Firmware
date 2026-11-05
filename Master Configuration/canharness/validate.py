@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from . import canid, hwmap, packing, rxdecode
+from . import canid, cantiming, hwmap, packing, rxdecode
 from .model import Project, SensorType
 
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -120,6 +120,7 @@ def validate(project: Project) -> list[Issue]:
                     f"{hwmap.AFE_SPS[afe]} SPS gives ~{per_ch:.0f} Hz per channel, below {ch.sample_rate_hz} Hz")
 
     _validate_rx(project, err, warn)
+    _validate_tx(project, err, warn)
     _, pack_errors = packing.pack(project)
     for e in pack_errors:
         err("packing", e)
@@ -139,6 +140,20 @@ def _validate_rx(project: Project, err, warn) -> None:
     for b in project.buses:
         if not IDENT.match(b.id):
             err(f"bus {b.id}", "bus id must be a valid C identifier")
+        if b.head_peripheral.upper() not in ("FDCAN1", "FDCAN2"):  # the H745 has two FDCAN controllers
+            err(f"bus {b.id}", "head_peripheral must be FDCAN1 or FDCAN2")
+        if b.bitrate <= 0 or (b.type == "can_fd" and not b.data_bitrate):
+            err(f"bus {b.id}", "bit rate(s) must be set (CAN-FD buses need a data bit rate)")
+        else:  # every device on the bus must be able to generate the rates exactly from its own FDCAN kernel clock
+            devices = [("head", project.settings.head_fdcan_kernel_hz)]
+            if b.role == "hub":
+                devices.append(("hub", project.settings.hub_fdcan_kernel_hz))
+            for dev, clk in devices:
+                for label, rate, data in (("nominal", b.bitrate, False), ("data", b.data_bitrate, True)):
+                    if rate and (b.type == "can_fd" or not data) and not cantiming.achievable(clk, rate, data):
+                        alt = ", ".join(cantiming.fmt(r) for r in cantiming.nearby(clk, rate, data))
+                        err(f"bus {b.id}", f"{label} rate {cantiming.fmt(rate)} cannot be generated exactly by the {dev} "
+                            f"({clk / 1e6:g} MHz FDCAN clock). Achievable nearby: {alt}")
     if len(buses) != len(project.buses):
         err("buses", "duplicate bus ids")
 
@@ -203,10 +218,79 @@ def _validate_rx(project: Project, err, warn) -> None:
         if ch.enabled and ch.source == "can_rx" and ch.channel_id not in mapped:
             warn(ch.short_name, "can_rx channel is not decoded by any receive frame")
 
-    from .generators.head_c import plan_filters  # late import: generators depend on the model
+    from .generators.head_c import head_tables, plan_filters  # late import: generators depend on the model
+    from .blob import LIMITS, MAX_BLOB
+    if len(project.buses) > LIMITS["buses"]:
+        err("buses", f"firmware supports at most {LIMITS['buses']} buses")
+    elif not errors_in_buses(project):
+        tables = head_tables(project)
+        for name, limit in LIMITS.items():
+            if len(tables[name]) > limit:
+                err("head config", f"{len(tables[name])} {name} exceeds firmware limit {limit}")
     for bus_id, plan in plan_filters(project).items():
         b = buses[bus_id]
         if plan["std_needed"] > b.std_filters:
             err(f"bus {bus_id}", f"needs {plan['std_needed']} standard filters, only {b.std_filters} configured")
         if plan["ext_needed"] > b.ext_filters:
             err(f"bus {bus_id}", f"needs {plan['ext_needed']} extended filters, only {b.ext_filters} configured")
+
+
+def _validate_tx(project: Project, err, warn) -> None:
+    buses = {b.id: b for b in project.buses}
+    chans = {c.channel_id: c for c in project.channels if c.enabled}
+    seen: dict[tuple[str, int, bool], str] = {}
+    rx_ids = {(f.bus, f.can_id, f.extended) for f in project.rx_frames}
+    names = set()
+    for f in project.tx_frames:
+        w = f.name
+        if w in names:
+            err(w, "duplicate transmit frame name")
+        names.add(w)
+        b = buses.get(f.bus)
+        if b is None:
+            err(w, f"bus '{f.bus}' is not defined")
+            continue
+        if b.role == "hub":
+            err(w, "transmit frames cannot be on the hub bus")
+        max_id = 0x1FFFFFFF if f.extended else 0x7FF
+        if not 0 <= f.can_id <= max_id:
+            err(w, f"CAN ID 0x{f.can_id:X} out of range for {'extended' if f.extended else 'standard'} ID")
+        max_dlc = 64 if b.type == "can_fd" else 8
+        if not 1 <= f.dlc <= max_dlc or (f.dlc > 8 and f.dlc not in packing.FD_LENGTHS):
+            err(w, f"DLC {f.dlc} not valid on a {b.type} bus")
+        if not 1 <= f.rate_hz <= 1000:
+            err(w, "rate must be 1-1000 Hz")
+        key = (f.bus, f.can_id, f.extended)
+        if key in seen:
+            err(w, f"duplicate CAN ID 0x{f.can_id:X} on bus {f.bus} (also {seen[key]})")
+        seen[key] = w
+        if key in rx_ids:
+            warn(w, f"CAN ID 0x{f.can_id:X} on bus {f.bus} is also a receive frame")
+        used: dict[int, str] = {}
+        for s in f.signals:
+            ch = chans.get(s.channel_id)
+            sw = f"{w}/{ch.short_name if ch else s.channel_id}"
+            if ch is None:
+                err(sw, f"channel {s.channel_id} does not exist or is disabled")
+                continue
+            if not 1 <= s.bit_length <= 32:
+                err(sw, "bit_length must be 1-32")
+                continue
+            if s.is_float and s.bit_length != 32:
+                err(sw, "float signals must be 32 bits")
+            if s.multiplier == 0:
+                err(sw, "multiplier must not be 0")
+            bits = rxdecode.bit_span(s)
+            if s.start_bit < 0 or max(bits) >= 8 * f.dlc:
+                err(sw, f"bits extend beyond the {f.dlc}-byte payload")
+            clash = next((used[bit] for bit in bits if bit in used), None)
+            if clash:
+                err(sw, f"overlaps signal {clash}")
+            for bit in bits:
+                used.setdefault(bit, sw)
+
+
+def errors_in_buses(project: Project) -> bool:
+    """True if bus definitions are too broken for table generation (a hub bus must exist)."""
+    return sum(b.role == "hub" for b in project.buses) != 1 or any(
+        f.bus not in {b.id for b in project.buses} for f in (*project.rx_frames, *project.tx_frames))

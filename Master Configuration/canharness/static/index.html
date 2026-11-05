@@ -93,6 +93,16 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 textarea { width: 100%; min-height: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-family: ui-monospace, Menlo, monospace; }
 .muted { color: var(--muted); }
 svg text { fill: var(--muted); font-size: 11px; }
+header.dev-ok { background: color-mix(in srgb, var(--ok) 16%, var(--panel)); border-bottom-color: var(--ok); }
+header.dev-slow, header.dev-wait { background: color-mix(in srgb, var(--warn) 16%, var(--panel)); border-bottom-color: var(--warn); }
+header.dev-lost { background: color-mix(in srgb, var(--bad) 16%, var(--panel)); border-bottom-color: var(--bad); }
+#devChip { cursor: pointer; }
+#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(420px, 90vw); }
+.toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 6px; padding: 8px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 13px; word-break: break-word; }
+.toast.error { border-left-color: var(--bad); } .toast.ok { border-left-color: var(--ok); } .toast b { color: var(--muted); }
+.console { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; height: 240px; overflow: auto; padding: 6px 8px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.cl { white-space: pre-wrap; word-break: break-word; }
+.cl.error { color: var(--bad); } .cl.ok { color: var(--ok); } .cl.warn { color: var(--warn); } .cl.cmd { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -100,6 +110,7 @@ svg text { fill: var(--muted); font-size: 11px; }
   <h1>CAN-harness Config</h1>
   <span class="path" id="path"></span>
   <span class="sp"></span>
+  <span class="chip" id="devChip" title="Open the Device tab"></span>
   <span class="chip" id="issueChip"></span>
   <span class="chip" id="saveChip"></span>
   <button class="btn primary" id="genBtn">Generate</button>
@@ -107,13 +118,14 @@ svg text { fill: var(--muted); font-size: 11px; }
 <nav id="nav"></nav>
 <main id="view"></main>
 <dialog id="dlg"></dialog>
+<div id="toasts"></div>
 
 <script>
 "use strict";
 // ---------- state ----------
 let P = null, HW = null, A = { issues: [], frames: [], bus_load: 0 };
 let tab = "channels", hubFilter = "all", search = "", selCal = null, selRx = 0;
-const TABS = [["channels", "Channels"], ["rx", "CAN receive"], ["connectors", "Connectors"], ["frames", "Frames & bus load"], ["calibration", "Calibration"], ["system", "Hubs & settings"]];
+const TABS = [["channels", "Channels"], ["rx", "CAN receive"], ["tx", "CAN transmit"], ["connectors", "Connectors"], ["frames", "Frames & bus load"], ["calibration", "Calibration"], ["system", "Hubs & settings"], ["device", "Device"]];
 const TYPES = ["resistive", "active", "thermocouple", "digital"];
 
 // ---------- helpers ----------
@@ -134,7 +146,13 @@ function h(tag, attrs, ...kids) {
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error("request failed"), { detail: j.detail });
+  if (!r.ok) {
+    let detail = j.detail;
+    if (!detail || (r.status === 404 && detail === "Not Found"))
+      detail = `HTTP ${r.status} from ${method} ${url}` + (r.status === 404 && url.startsWith("/api/")
+        ? " - the web server is older than this page; restart it (python -m canharness.web)" : "");
+    throw Object.assign(new Error("request failed"), { detail });
+  }
   return j;
 }
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -451,7 +469,7 @@ function busesCard() {
         h("td", {}, h("select", { value: b.role, onchange: e => { b.role = e.target.value; changed(true); } }, ["hub", "external"].map(r => h("option", { value: r }, r)))),
         h("td", {}, h("select", { value: b.type, onchange: e => { b.type = e.target.value; changed(true); } }, ["can", "can_fd"].map(r => h("option", { value: r }, r)))),
         cell(b, "bitrate"), cell(b, "data_bitrate"), cell(b, "head_peripheral", { text: true, cls: "w-s" }), cell(b, "std_filters", { cls: "w-s" }), cell(b, "ext_filters", { cls: "w-s" }),
-        h("td", {}, h("button", { class: "btn icon", onclick: () => { if (P.rx_frames.some(f => f.bus === b.id) && !confirm("Receive frames use this bus. Remove anyway?")) return; P.buses = P.buses.filter(x => x !== b); changed(true); } }, "✕"))))))),
+        h("td", {}, h("button", { class: "btn icon", onclick: () => { if ((P.rx_frames.some(f => f.bus === b.id) || (P.tx_frames || []).some(f => f.bus === b.id)) && !confirm("Receive/transmit frames use this bus. Remove anyway?")) return; P.buses = P.buses.filter(x => x !== b); changed(true); } }, "✕"))))))),
     h("p", { class: "muted" }, "Std/Ext filters = the FDCAN StdFiltersNbr / ExtFiltersNbr configured in CubeMX for that peripheral. Exactly one bus is the hub bus."),
     h("button", { class: "btn", onclick: () => { let n = P.buses.length + 1; while (P.buses.some(b => b.id === `EXT${n}`)) n++; P.buses.push({ id: `EXT${n}`, name: `External CAN ${n}`, role: "external", type: "can", bitrate: 500000, data_bitrate: null, head_peripheral: "", std_filters: 16, ext_filters: 8 }); changed(true); } }, "+ Add bus"));
 }
@@ -523,6 +541,98 @@ function viewRx() {
     issueBox()));
 }
 
+// ---------- CAN transmit tab (e.g. Motec ECU) ----------
+let selTx = 0;
+// first free start bit for a new signal: walk the byte order's bit sequence until a bit is unused
+function nextFreeStart(f, order) {
+  const used = new Set(f.signals.flatMap(bitSpan));
+  let pos = order === "intel" ? 0 : 7;
+  while (used.has(pos) && pos < 8 * f.dlc) pos = order === "intel" ? pos + 1 : (pos % 8 ? pos - 1 : pos + 15);
+  return pos;
+}
+function viewTx() {
+  P.tx_frames = P.tx_frames || [];
+  const ext = P.buses.filter(b => b.role === "external");
+  if (selTx >= P.tx_frames.length) selTx = Math.max(0, P.tx_frames.length - 1);
+  const f = P.tx_frames[selTx];
+  const list = h("div", { class: "card list" }, P.tx_frames.map((x, i) => h("button", { class: i === selTx ? "on" : "", onclick: () => { selTx = i; render(); } }, x.name, h("span", { class: "muted" }, `  ${x.bus} ${hexId(x.can_id)}`))),
+    h("button", { class: "btn", style: "margin-top:8px", onclick: () => {
+      P.tx_frames.push({ name: `tx_${P.tx_frames.length + 1}`, bus: ext[0]?.id || "", can_id: 0x200 + P.tx_frames.length, extended: false, dlc: 8, rate_hz: 50, signals: [] });
+      selTx = P.tx_frames.length - 1; changed(true); } }, "+ Frame"));
+  if (!f) return h("div", { class: "cols" }, list, h("p", { class: "muted" }, "Define frames the head transmits on a CAN bus (e.g. to the Motec ECU). Each signal sends one channel's value; the receiver recovers it as raw × multiplier + offset."));
+  const fin = (key, o = {}) => h("input", { type: o.type || "number", class: o.cls || "", step: "any", value: o.fmt ? o.fmt(f[key]) : (f[key] ?? ""), onchange: e => {
+    f[key] = o.parse ? o.parse(e.target.value) : Number(e.target.value); changed(!!o.structural); } });
+  const chOf = s => P.channels.find(c => c.channel_id === s.channel_id) || { name: "?", short_name: "?", units: "" };
+  const owner = new Map();
+  f.signals.forEach(sg => bitSpan(sg).forEach(b => owner.set(b, sg)));
+  const rows = [];
+  for (let byte = 0; byte < f.dlc; byte++) {
+    const cells = [h("span", { class: "muted mono", style: "width:2.2em;display:inline-block" }, byte)];
+    for (let bit = 7; bit >= 0; bit--) {
+      const sg = owner.get(byte * 8 + bit);
+      cells.push(h("span", { class: "mono", title: sg ? `${chOf(sg).short_name} (bit ${byte * 8 + bit})` : `bit ${byte * 8 + bit}`,
+        style: `display:inline-block;width:22px;height:20px;text-align:center;border:1px solid var(--line);margin:1px;border-radius:3px;font-size:10px;color:#10131a;${sg ? `background:${chColor(sg.channel_id)}` : "color:var(--muted)"}` }, bit));
+    }
+    rows.push(h("div", {}, cells));
+  }
+  const channelOptions = P.channels.filter(c => c.enabled).sort((a, b) => a.channel_id - b.channel_id);
+  const sigRow = (sg, idx) => {
+    const so = key => h("input", { type: "number", step: "any", class: "w-s", value: sg[key] ?? "", onchange: e => { sg[key] = Number(e.target.value); changed(key === "start_bit" || key === "bit_length"); } });
+    const move = d => { const j = idx + d; if (j >= 0 && j < f.signals.length) { [f.signals[j], f.signals[idx]] = [f.signals[idx], f.signals[j]]; changed(true); } };
+    return h("tr", {},
+      h("td", {}, h("select", { value: sg.channel_id, onchange: e => { sg.channel_id = Number(e.target.value); changed(true); } },
+        channelOptions.map(c => h("option", { value: c.channel_id }, `${c.name} (${c.short_name})`)))),
+      h("td", {}, so("start_bit")), h("td", {}, so("bit_length")),
+      h("td", {}, h("select", { value: sg.byte_order, onchange: e => { sg.byte_order = e.target.value; changed(true); } }, ["motorola", "intel"].map(o => h("option", { value: o }, o === "motorola" ? "big-endian (motorola)" : "little-endian (intel)")))),
+      h("td", {}, h("input", { type: "checkbox", checked: sg.signed, onchange: e => { sg.signed = e.target.checked; changed(false); } })),
+      h("td", {}, h("input", { type: "checkbox", checked: sg.is_float, onchange: e => { sg.is_float = e.target.checked; if (sg.is_float) sg.bit_length = 32; changed(true); } })),
+      h("td", {}, so("multiplier")), h("td", {}, so("offset")),
+      h("td", {}, h("button", { class: "btn icon", title: "Move up", onclick: () => move(-1) }, "↑"), h("button", { class: "btn icon", title: "Move down", onclick: () => move(1) }, "↓"),
+        h("button", { class: "btn icon", title: "Remove signal", onclick: () => { f.signals.splice(idx, 1); changed(true); } }, "✕")));
+  };
+  // pack the signals back to back in list order, each following its own byte order
+  const autoArrange = () => {
+    let bits = 0;  // bits used so far, counted from the MSB of byte 0
+    for (const sg of f.signals) {
+      sg.start_bit = sg.byte_order === "intel" ? bits : Math.floor(bits / 8) * 8 + 7 - (bits % 8);
+      bits += sg.bit_length;
+    }
+    changed(true);
+  };
+  const exportCsv = () => {
+    const lines = ["frame,can_id,extended,rate_hz,dlc,signal,short_name,units,start_bit,bit_length,byte_order,signed,float,multiplier,offset"];
+    for (const fr of P.tx_frames) for (const sg of fr.signals) {
+      const c = P.channels.find(x => x.channel_id === sg.channel_id) || {};
+      lines.push([fr.name, hexId(fr.can_id), fr.extended, fr.rate_hz, fr.dlc, `"${c.name || ""}"`, c.short_name || "", `"${c.units || ""}"`, sg.start_bit, sg.bit_length, sg.byte_order, sg.signed, sg.is_float, sg.multiplier, sg.offset].join(","));
+    }
+    const a = h("a", { href: URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" })), download: "can_tx_signals.csv" });
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  return h("div", { class: "cols" }, list, h("div", {},
+    h("div", { class: "card" }, h("h3", {}, "Transmit frame"),
+      h("div", { class: "form" },
+        "Name", h("input", { type: "text", class: "w-l", value: f.name, onchange: e => { f.name = e.target.value; changed(true); } }),
+        "Bus", h("select", { value: f.bus, onchange: e => { f.bus = e.target.value; changed(true); } }, ext.map(b => h("option", { value: b.id }, `${b.id} · ${b.name} (${b.type})`))),
+        "CAN ID", fin("can_id", { type: "text", fmt: hexId, parse: parseId, structural: true }),
+        "Extended (29-bit) ID", h("input", { type: "checkbox", checked: f.extended, onchange: e => { f.extended = e.target.checked; changed(true); } }),
+        "DLC (bytes)", fin("dlc", { structural: true }), "Rate (Hz)", fin("rate_hz")),
+      h("div", { class: "toolbar", style: "margin-top:8px" }, h("span", { class: "sp" }),
+        h("button", { class: "btn", onclick: () => { if (confirm(`Delete transmit frame "${f.name}"?`)) { P.tx_frames.splice(selTx, 1); changed(true); } } }, "Delete frame"))),
+    h("div", { class: "card" }, h("h3", {}, "Signals"),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Channel", "Start bit", "Bits", "Byte order", "Signed", "Float", "Multiplier", "Offset", ""].map(c => h("th", {}, c)))),
+        h("tbody", {}, f.signals.map(sigRow)))),
+      h("div", { class: "toolbar", style: "margin-top:8px" },
+        h("button", { class: "btn primary", onclick: () => {
+          const first = channelOptions[0]; if (!first) return alert("Define a channel first.");
+          f.signals.push({ channel_id: first.channel_id, start_bit: nextFreeStart(f, "motorola"), bit_length: 16, byte_order: "motorola", signed: false, is_float: false, multiplier: 1, offset: 0 });
+          changed(true); } }, "+ Signal"),
+        h("button", { class: "btn", title: "Pack the signals back to back in list order", onclick: autoArrange }, "Auto-arrange"),
+        h("button", { class: "btn", title: "All transmit signals, for setting up the receiver", onclick: exportCsv }, "Export CSV"),
+        h("span", { class: "muted" }, "Sent raw = (value − offset) ÷ multiplier. Set the receiver to value = raw × multiplier + offset. Hub channels are raw ADC counts; CAN-receive channels are already scaled.")),
+      h("div", { style: "margin-top:12px" }, h("div", { class: "muted", style: "margin-bottom:4px" }, "Payload bit map (byte rows, bit 7 → 0)"), rows)),
+    issueBox()));
+}
+
 // ---------- hubs & settings tab ----------
 function viewSystem() {
   const s = P.settings;
@@ -543,6 +653,7 @@ function viewSystem() {
     h("div", { class: "card" }, h("h3", {}, "Frame packing & bus"),
       h("div", { class: "form" },
         ...field("Data start byte (after timestamp)", "data_start"), ...field("Data end byte (exclusive, max 64)", "data_end"),
+        ...field("Head FDCAN kernel clock (Hz)", "head_fdcan_kernel_hz"), ...field("Hub FDCAN kernel clock (Hz)", "hub_fdcan_kernel_hz"),
         "Hub-supported rates (Hz)", h("input", { value: s.supported_rates_hz.join(", "), onchange: e => { s.supported_rates_hz = e.target.value.split(/[ ,]+/).map(Number).filter(Boolean); changed(false); } }))),
     busesCard(),
     h("div", { class: "card" }, h("h3", {}, "Dash UDP"), h("div", { class: "form" }, ...field("IP", "udp_ip", { text: true }), ...field("Port", "udp_port"))),
@@ -551,6 +662,211 @@ function viewSystem() {
       h("input", { type: "file", accept: ".yaml,.yml", onchange: async e => {
         const f = e.target.files[0]; if (!f || !confirm("Replace the current project with this import?")) return;
         try { P = await api("POST", "/api/import-legacy", { yaml: await f.text(), name: f.name.replace(/\.ya?ml$/, "") }); changed(true); } catch (err) { alert(err.detail || "Import failed"); } } })));
+}
+
+
+// ---------- device tab ----------
+const dev = { ports: [], connected: null, info: null, live: null, liveOn: false, stats: null, sniffOn: false, sniffBus: 0, frames: [], last: 0, msg: "", cfg: null, baud: 115200, port: "", streak: 0, lastOk: null, textSeq: 0 };
+let devTimers = [];
+function devStop() { devTimers.forEach(clearInterval); devTimers = []; }
+// Reporting: every event goes to the console log (repeated errors are folded into one line with a count and first/last
+// time), and also shows as a temporary toast so a new problem is noticed even when the console is off screen.
+const devLog = []; // {t0, t, level, msg, count}
+const clock = d => new Date(d).toTimeString().slice(0, 8);
+const LOG_ICON = { error: "✗ ", ok: "✓ ", text: "← ", cmd: "→ ", warn: "! ", info: "" };
+function errMsg(e) { return Array.isArray(e.detail) ? e.detail.join("; ") : (e.detail || e.message || String(e)); }
+function logEvent(level, msg) {
+  const now = Date.now(), last = devLog[devLog.length - 1];
+  if ((level === "error" || level === "warn") && last && last.level === level && last.msg === msg) { last.count++; last.t = now; }
+  else devLog.push({ t0: now, t: now, level, msg, count: 1 });
+  if (devLog.length > 400) devLog.shift();
+  refreshConsole();
+}
+function consoleLine(l) {
+  return h("div", { class: `cl ${l.level}` }, h("span", { class: "muted" }, clock(l.t0) + " "), LOG_ICON[l.level] + l.msg,
+    l.count > 1 ? h("b", {}, `  ×${l.count}`) : null, l.count > 1 ? h("span", { class: "muted" }, ` (since ${clock(l.t0)}, last ${clock(l.t)})`) : null);
+}
+function refreshConsole() {
+  const c = document.getElementById("devConsole"); if (!c) return;
+  const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 8;
+  c.replaceChildren(...devLog.map(consoleLine));
+  if (atBottom) c.scrollTop = c.scrollHeight;
+}
+const toasts = new Map();
+function toast(msg, level = "error", ms = 5000) {
+  let t = toasts.get(msg);
+  if (t) { t.count++; t.el.querySelector(".n").textContent = `  ×${t.count}`; clearTimeout(t.timer); }
+  else {
+    const el = h("div", { class: `toast ${level}` }, h("span", {}, msg), h("b", { class: "n" }, ""));
+    document.getElementById("toasts").append(el); t = { el, count: 1 }; toasts.set(msg, t);
+  }
+  t.timer = setTimeout(() => { t.el.remove(); toasts.delete(msg); }, ms);
+}
+function devErr(e) { const m = errMsg(e); logEvent("error", m); toast(m, "error"); }
+function devOk(m) { logEvent("ok", m); toast(m, "ok", 2500); }
+
+// ---- connection state (top bar) and background health poll
+function devState() {
+  if (!dev.connected) return "off";
+  if (dev.streak >= 3) return "lost";
+  if (dev.streak === 0 && dev.lastOk && Date.now() - dev.lastOk < 7000) return "ok";
+  return dev.lastOk ? "slow" : "wait";
+}
+function updateDevChip() {
+  const st = devState(), c = document.getElementById("devChip");
+  if (!c) return;
+  c.textContent = { off: "Device: not connected", ok: `Device: connected (${dev.connected})`, slow: `Device: not responding (${dev.streak})`,
+    wait: "Device: connecting…", lost: `Device: lost (${dev.streak} failed polls)` }[st];
+  c.className = "chip " + ({ ok: "ok", slow: "warn", wait: "warn", lost: "bad", off: "" }[st]);
+  document.querySelector("header").className = st === "off" ? "" : "dev-" + st;
+}
+let hbBusy = false;
+async function devHeartbeat() {
+  if (!dev.connected || hbBusy) return;
+  hbBusy = true;
+  try {
+    const r = await api("GET", `/api/device/status?since=${dev.textSeq}`);
+    dev.info = r.info; dev.stats = r.stats; dev.textSeq = r.text_last;
+    if (dev.streak > 0) logEvent("ok", `device is responding again (after ${dev.streak} failed ${dev.streak === 1 ? "poll" : "polls"})`);
+    dev.streak = 0; dev.lastOk = Date.now();
+    r.text.forEach(t => logEvent("text", t.line));
+  } catch (e) {
+    dev.streak++;
+    const m = errMsg(e); logEvent("error", m);
+    if (dev.streak === 1) toast(m, "error"); // later repeats are in the log with a count; the chip shows the streak
+  } finally { hbBusy = false; }
+  updateDevChip();
+  const i = document.getElementById("devInfo"); if (i) i.replaceChildren(devInfoBody());
+  const b = document.getElementById("devStats"); if (b) b.replaceChildren(devStatsBody());
+}
+async function devSendAscii(line) {
+  if (!line.trim()) return;
+  logEvent("cmd", line);
+  try {
+    const r = await api("POST", "/api/device/ascii", { line });
+    r.lines.forEach(t => logEvent("text", t.line)); dev.textSeq = r.last;
+    if (!r.lines.length) logEvent("warn", "no reply within 1 s");
+  } catch (e) { devErr(e); }
+}
+function devConsoleCard() {
+  const inp = h("input", { class: "w-l", placeholder: "ASCII command (e.g. ping), Enter to send", disabled: !dev.connected, style: "flex:1;min-width:200px",
+    onkeydown: e => { if (e.key === "Enter") { const v = inp.value; inp.value = ""; devSendAscii(v); } } });
+  const c = h("div", { class: "card" }, h("h3", {}, "Console"), h("div", { class: "console", id: "devConsole" }, devLog.map(consoleLine)),
+    h("div", { class: "toolbar", style: "margin:8px 0 0" }, inp, h("button", { class: "btn", onclick: () => { devLog.length = 0; refreshConsole(); } }, "Clear")));
+  setTimeout(() => { const el = document.getElementById("devConsole"); if (el) el.scrollTop = el.scrollHeight; }, 0);
+  return c;
+}
+async function devRefreshPorts() { try { const r = await api("GET", "/api/device/ports"); dev.ports = r.ports; dev.connected = r.connected; } catch (e) { devErr(e); } }
+async function devRefreshInfo() { try { dev.info = await api("GET", "/api/device/info"); } catch (e) { devErr(e); } const el = document.getElementById("devInfo"); if (el) el.replaceChildren(devInfoBody()); }
+function devStart() {
+  if (dev.connected && dev.liveOn) devTimers.push(setInterval(devPollLive, 600));
+  if (dev.connected && dev.sniffOn) devTimers.push(setInterval(devPollSniff, 300));
+}
+async function devPollLive() {
+  try { dev.live = await api("GET", "/api/device/live"); dev.stats = await api("GET", "/api/device/stats"); }
+  catch (e) { dev.liveOn = false; devStop(); devErr(e); return; }
+  const a = document.getElementById("devLive"); if (a) a.replaceChildren(devLiveBody());
+  const b = document.getElementById("devStats"); if (b) b.replaceChildren(devStatsBody());
+}
+async function devPollSniff() {
+  try { const r = await api("GET", `/api/device/sniff?since=${dev.last}`); dev.last = r.last; dev.frames = r.frames.reverse().concat(dev.frames).slice(0, 200); }
+  catch (e) { dev.sniffOn = false; devStop(); devErr(e); return; }
+  const c = document.getElementById("devSniff"); if (c) c.replaceChildren(devSniffBody());
+}
+function hashChip(hash) {
+  if (!hash) return h("span", { class: "muted" }, "none");
+  const same = A.config_hash && hash === A.config_hash;
+  return h("span", {}, h2(hash), " ", h("span", { class: "chip " + (same ? "ok" : "warn") }, same ? "matches project" : "differs from project"));
+}
+const h2 = x => h("span", { class: "mono" }, x);
+function devInfoBody() {
+  const i = dev.info; if (!i) return h("span", { class: "muted" }, "No info yet.");
+  const row = (k, v) => [h("div", { class: "muted" }, k), h("div", {}, v)];
+  return h("div", { class: "form" },
+    ...row("Firmware", i.fw_version), ...row("Device UID", h2(i.uid)), ...row("CM4 (CAN core)", i.cm4_alive ? "running" : "NOT RESPONDING"),
+    ...row("Active config", [hashChip(i.active_hash), ` (source: ${i.active_source}, ${i.channel_count} channels)`]),
+    ...row("Stored config", hashChip(i.stored_hash)),
+    ...row("CAN kernel clock", i.fdcan_kernel_hz ? [`${i.fdcan_kernel_hz / 1e6} MHz `, i.fdcan_kernel_hz === P.settings.head_fdcan_kernel_hz ? h("span", { class: "chip ok" }, "matches project")
+      : h("span", { class: "chip bad" }, `project expects ${P.settings.head_fdcan_kernel_hz / 1e6} MHz: bus rates will not be generated correctly`)] : "unknown"),
+    ...row("Uptime", `${(i.uptime_ms / 1000).toFixed(1)} s`));
+}
+function devLiveBody() {
+  if (!dev.live) return h("span", { class: "muted" }, "Press Start to poll values.");
+  return h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Channel", "Raw", "Calibrated", "Units", "Status"].map(c => h("th", {}, c)))),
+    h("tbody", {}, dev.live.channels.map(r => {
+      const ch = P.channels.find(c => c.channel_id === r.channel_id);
+      const fmt = v => Number.isInteger(v) ? v : +v.toPrecision(6);
+      return h("tr", {}, h("td", {}, ch ? ch.name : `#${r.channel_id}`), h("td", { class: "mono" }, fmt(r.value)),
+        h("td", { class: "mono" }, ch && !r.stale ? fmt(evalCal(ch, r.value)) : "—"), h("td", {}, ch ? ch.units : ""),
+        h("td", {}, r.stale ? h("span", { class: "chip warn" }, "stale") : h("span", { class: "chip ok" }, "live")));
+    }))));
+}
+function devStatsBody() {
+  const s = dev.stats; if (!s) return h("span", { class: "muted" }, "—");
+  return h("div", {}, s.buses.map((b, i) => h("div", {}, h("b", {}, `Bus ${i} ${P.buses[i] ? "(" + P.buses[i].id + ")" : ""}: `),
+    `${b.rx_frames} rx, ${b.rx_matched} matched, ${b.rx_dropped} unmatched, ${b.fifo_lost} fifo-lost` + (b.tx_frames != null ? `, ${b.tx_frames} tx${b.tx_dropped ? ` (${b.tx_dropped} dropped)` : ""}` : ""), b.bus_off ? h("span", { class: "chip bad" }, "BUS OFF") : null, b.error_passive ? h("span", { class: "chip warn" }, "error passive") : null)),
+    s.hub_lost.some(x => x) ? h("div", {}, "Estimated hub frames lost: ", s.hub_lost.map((x, i) => x ? `hub ${i}: ${x}` : null).filter(Boolean).join(", ")) : null);
+}
+function devSniffBody() {
+  return h("div", { class: "tablewrap", style: "max-height:340px" }, h("table", {}, h("thead", {}, h("tr", {}, ["t (ms)", "Bus", "ID", "Len", "Data", ""].map(c => h("th", {}, c)))),
+    h("tbody", {}, dev.frames.slice(0, 100).map(f => h("tr", {}, h("td", { class: "mono" }, f.ts_ms), h("td", {}, f.bus),
+      h("td", { class: "mono" }, `${f.extended ? "x" : ""}${f.id.toString(16).toUpperCase()}`), h("td", {}, f.data.length / 2),
+      h("td", { class: "mono" }, f.data.replace(/(..)/g, "$1 ")),
+      h("td", {}, h("button", { class: "btn icon", title: "Define a receive frame for this ID", onclick: () => devDefineFrame(f) }, "+")))))));
+}
+function devDefineFrame(f) {
+  const ext = P.buses.filter(b => b.role === "external");
+  const bus = P.buses[f.bus] && P.buses[f.bus].role === "external" ? P.buses[f.bus].id : (ext[0] || {}).id;
+  if (!bus) { alert("Define an external bus first (Hubs & settings)."); return; }
+  const existing = P.rx_frames.findIndex(r => r.bus === bus && r.can_id === f.id && r.extended === f.extended);
+  if (existing < 0) {
+    P.rx_frames.push({ name: `frame_${f.id.toString(16).toUpperCase()}`, bus, can_id: f.id, extended: f.extended, id_mask: null, dlc: f.data.length / 2, rate_hz: 100, timeout_ms: 1000, mux_start_bit: null, mux_bit_length: null, signals: [] });
+    selRx = P.rx_frames.length - 1;
+  } else selRx = existing;
+  tab = "rx"; changed(true);
+}
+async function devUpload(apply, store) {
+  try { devOk("Uploading…"); const r = await api("POST", "/api/device/upload", { project: P, apply, store }); devOk(`Uploaded ${r.bytes} bytes${r.applied ? ", applied" : ""}${r.stored ? ", stored in flash" : ""}.`); }
+  catch (e) { devErr(e); }
+  devRefreshInfo();
+}
+function viewDevice() {
+  const connected = !!dev.connected;
+  const portSel = h("select", { value: dev.port || (dev.ports[0] || {}).device || "", onchange: e => { dev.port = e.target.value; } },
+    dev.ports.length ? dev.ports.map(p => h("option", { value: p.device }, `${p.device}${p.description && p.description !== "n/a" ? " — " + p.description : ""}`)) : h("option", { value: "" }, "no serial ports found"));
+  const baud = h("input", { type: "number", class: "w-m", value: dev.baud, onchange: e => { dev.baud = Number(e.target.value); } });
+  const conn = h("div", { class: "card" }, h("h3", {}, "Connection (ST-LINK virtual COM port)"),
+    h("div", { class: "toolbar" }, portSel, "Baud", baud,
+      h("button", { class: "btn", onclick: async () => { await devRefreshPorts(); renderView(); } }, "Refresh ports"),
+      connected
+        ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/device/disconnect"); dev.connected = null; dev.info = null; dev.live = null; dev.liveOn = false; dev.sniffOn = false; dev.streak = 0; dev.lastOk = null; logEvent("info", "disconnected"); renderView(); } }, `Disconnect ${dev.connected}`)
+        : h("button", { class: "btn primary", onclick: async () => {
+            const port = portSel.value; if (!port) return;
+            try { const r = await api("POST", "/api/device/connect", { port, baud: dev.baud }); dev.connected = r.port; dev.info = r.info; dev.port = port; dev.streak = 0; dev.lastOk = Date.now(); dev.textSeq = 0; devOk(`connected to ${r.port}`); renderView(); } catch (e) { devErr(e); } } }, "Connect")),
+    null);
+  if (!connected) return h("div", {}, conn, devConsoleCard(), h("p", { class: "muted" }, "The web app talks to the head module over the same UART4 link the debug console uses (binary protocol, see docs/protocol.md). Close any serial terminal first."));
+  const cards = [conn, devConsoleCard(),
+    h("div", { class: "card" }, h("h3", {}, "Device"), h("div", { id: "devInfo" }, devInfoBody()),
+      h("div", { class: "toolbar", style: "margin-top:10px" },
+        h("button", { class: "btn primary", onclick: () => devUpload(true, false) }, "Upload & apply"),
+        h("button", { class: "btn", onclick: () => devUpload(true, true) }, "Upload, apply & store in flash"),
+        h("button", { class: "btn", onclick: async () => { try { dev.cfg = await api("GET", "/api/device/config?source=active"); devOk(`Active config: ${dev.cfg.bytes} bytes, hash ${dev.cfg.hash}, ` + Object.entries(dev.cfg.counts).map(([k, v]) => `${v} ${k}`).join(", ")); } catch (e) { devErr(e); } } }, "Read back active config"),
+        h("button", { class: "btn", onclick: async () => { if (!confirm("Erase the stored config and revert to the compiled-in default?")) return; try { await api("POST", "/api/device/clear", { revert: true }); devOk("Stored config erased; default config active."); } catch (e) { devErr(e); } devRefreshInfo(); } }, "Revert to default"),
+        h("button", { class: "btn", onclick: async () => { if (!confirm("Reboot the head module?")) return; try { await api("POST", "/api/device/reboot"); dev.connected = null; dev.info = null; dev.lastOk = null; devOk("rebooting; reconnect in a moment"); renderView(); } catch (e) { devErr(e); } } }, "Reboot"),
+        h("button", { class: "btn", onclick: () => devRefreshInfo() }, "Refresh"))),
+    h("div", { class: "card" }, h("h3", {}, "Live values"),
+      h("div", { class: "toolbar" }, h("button", { class: "btn" + (dev.liveOn ? "" : " primary"), onclick: () => { dev.liveOn = !dev.liveOn; renderView(); if (dev.liveOn) devPollLive(); } }, dev.liveOn ? "Stop" : "Start"),
+        h("span", { class: "muted" }, "Raw values are what the head distributes; calibrated uses this project's scaling/curve.")),
+      h("div", { id: "devLive" }, devLiveBody()), h("div", { id: "devStats", style: "margin-top:8px" }, devStatsBody())),
+    h("div", { class: "card" }, h("h3", {}, "CAN sniffer"),
+      h("div", { class: "toolbar" },
+        h("select", { value: dev.sniffBus, onchange: e => { dev.sniffBus = Number(e.target.value); } }, P.buses.map((b, i) => h("option", { value: i }, `${i} · ${b.id} (${b.head_peripheral})`))),
+        h("button", { class: "btn" + (dev.sniffOn ? "" : " primary"), onclick: async () => {
+          try { await api("POST", "/api/device/sniff", { bus: dev.sniffBus, enable: !dev.sniffOn }); dev.sniffOn = !dev.sniffOn; renderView(); } catch (e) { devErr(e); } } }, dev.sniffOn ? "Stop" : "Start"),
+        h("button", { class: "btn", onclick: () => { dev.frames = []; const c = document.getElementById("devSniff"); if (c) c.replaceChildren(devSniffBody()); } }, "Clear"),
+        h("span", { class: "muted" }, "While sniffing, the bus accepts every frame. Use + to define a receive frame from a seen ID.")),
+      h("div", { id: "devSniff" }, devSniffBody()))];
+  return h("div", {}, cards);
 }
 
 // ---------- generate ----------
@@ -572,10 +888,13 @@ document.getElementById("genBtn").onclick = async () => {
 // ---------- shell ----------
 function render() { renderView(); updateStatus(); }
 function renderView() {
+  devStop();
   const nav = document.getElementById("nav");
-  nav.replaceChildren(...TABS.map(([k, t]) => h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; render(); } }, t)));
-  const v = { channels: viewChannels, rx: viewRx, connectors: viewConnectors, frames: viewFrames, calibration: viewCalibration, system: viewSystem }[tab]();
+  nav.replaceChildren(...TABS.map(([k, t]) => h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; if (k === "device") devRefreshPorts().then(render); else render(); } }, t)));
+  const v = { channels: viewChannels, rx: viewRx, tx: viewTx, connectors: viewConnectors, frames: viewFrames, calibration: viewCalibration, system: viewSystem, device: viewDevice }[tab]();
   document.getElementById("view").replaceChildren(v);
+  updateDevChip();
+  if (tab === "device") devStart();
 }
 (async function init() {
   try {
@@ -583,7 +902,12 @@ function renderView() {
     const r = await api("GET", "/api/project");
     P = r.project; document.getElementById("path").textContent = r.path; setSave("Saved");
     A = await api("POST", "/api/analyze", P);
+    await devRefreshPorts(); // pick up a connection that already exists on the server (page reload)
+    if (dev.connected) { dev.lastOk = null; devHeartbeat(); }
     render();
+    document.getElementById("devChip").onclick = () => { tab = "device"; devRefreshPorts().then(render); };
+    setInterval(devHeartbeat, 2000);
+    setInterval(updateDevChip, 1000);
   } catch (e) { document.getElementById("view").textContent = "Failed to load project: " + (e.message || e); }
 })();
 </script>

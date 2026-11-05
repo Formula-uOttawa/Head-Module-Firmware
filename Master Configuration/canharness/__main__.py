@@ -25,6 +25,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("generate")
     p.add_argument("project", type=Path)
     p.add_argument("--out", type=Path, default=Path("out"))
+    p.add_argument("--deploy", action="store_true", help="also copy the head default config into ../Common/Src")
     a = ap.parse_args(argv)
 
     if a.cmd == "import-legacy":
@@ -43,8 +44,12 @@ def main(argv=None) -> int:
             (d / "sensor_config_generated.c").write_text(generate_hub(project, h.hub_id), encoding="utf-8")
         d = a.out / "head"
         d.mkdir(parents=True, exist_ok=True)
-        for name, text in generate_head(project).items():
-            (d / name).write_text(text, encoding="utf-8")
+        for name, data in generate_head(project).items():
+            (d / name).write_bytes(data if isinstance(data, bytes) else data.encode())
+        if a.deploy:
+            dst = Path(__file__).resolve().parents[2] / "Common" / "Src" / "head_default_blob.c"
+            dst.write_text((a.out / "head" / "head_default_blob.c").read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"deployed {dst}")
         d = a.out / "dash"
         d.mkdir(parents=True, exist_ok=True)
         (d / "channels.json").write_text(generate_dash(project), encoding="utf-8")
