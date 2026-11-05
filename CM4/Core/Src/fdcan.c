@@ -1,25 +1,8 @@
 #include "fdcan.h"
+#include "head_cm4.h"
 
+/* All received frames (hub bus and external buses) go through the runtime-configured decoder in head_cm4.c. */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
-    if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != 0)
-    {
-        FDCAN_RxHeaderTypeDef rxHeader;
-        uint8_t rxData[64];
-
-        if (hfdcan->Instance == FDCAN1)
-        {
-            // Retrieve CAN frame
-            HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &rxHeader, rxData);
-            
-            // rxHeader.Identifier, rxHeader.DataLength, etc.
-        }
-        else if (hfdcan->Instance == FDCAN2)
-        {
-            // Retrieve Classic CAN
-            HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &rxHeader, rxData);
-            
-            // Process Classic CAN data
-        }
-    }
+    HeadCm4_OnRxFifo0(hfdcan, RxFifo0ITs);
 }

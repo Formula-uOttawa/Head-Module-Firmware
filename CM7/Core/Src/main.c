@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tcan.h"
+#include "head_link.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,7 +33,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DEF_DEBUG
+/* Legacy UART debug prototype (DMA based, below) is superseded by head_link.c / head_debug.c: the ASCII commands now run
+   through the same UART link as the binary config protocol. Define this again only to revive the old prototype. */
+//#define DEF_DEBUG
 /* DUAL_CORE_BOOT_SYNC_SEQUENCE: Define for dual core boot synchronization    */
 /*                             demonstration code based on hardware semaphore */
 /* This define is present in both CM7/CM4 projects                            */
@@ -290,6 +293,8 @@ Error_Handler();
     HAL_Delay(2);
 
     TCAN2410Init();
+
+    HeadLink_Init(); /* UART4 config/debug protocol */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -299,6 +304,7 @@ Error_Handler();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    HeadLink_Poll();
   }
   /* USER CODE END 3 */
 }
@@ -374,7 +380,7 @@ void PeriphCommonClock_Config(void)
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
   PeriphClkInitStruct.PLL2.PLL2M = 4;
-  PeriphClkInitStruct.PLL2.PLL2N = 11;
+  PeriphClkInitStruct.PLL2.PLL2N = 10;
   PeriphClkInitStruct.PLL2.PLL2P = 2;
   PeriphClkInitStruct.PLL2.PLL2Q = 2;
   PeriphClkInitStruct.PLL2.PLL2R = 2;
