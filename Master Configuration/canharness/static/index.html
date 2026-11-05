@@ -712,10 +712,16 @@ function devState() {
   if (dev.streak === 0 && dev.lastOk && Date.now() - dev.lastOk < 7000) return "ok";
   return dev.lastOk ? "slow" : "wait";
 }
+const devIsHub = () => !!dev.info && dev.info.device_type === "hub";
+function devName() {
+  if (!dev.info) return "";
+  if (!devIsHub()) return "head module";
+  return dev.info.hub_id == null ? "hub module" : `hub ${dev.info.hub_id}`;
+}
 function updateDevChip() {
   const st = devState(), c = document.getElementById("devChip");
   if (!c) return;
-  c.textContent = { off: "Device: not connected", ok: `Device: connected (${dev.connected})`, slow: `Device: not responding (${dev.streak})`,
+  c.textContent = { off: "Device: not connected", ok: `Device: ${devName() || "board"} connected (${dev.connected})`, slow: `Device: not responding (${dev.streak})`,
     wait: "Device: connecting…", lost: `Device: lost (${dev.streak} failed polls)` }[st];
   c.className = "chip " + ({ ok: "ok", slow: "warn", wait: "warn", lost: "bad", off: "" }[st]);
   document.querySelector("header").className = st === "off" ? "" : "dev-" + st;
@@ -763,7 +769,7 @@ function devStart() {
   if (dev.connected && dev.sniffOn) devTimers.push(setInterval(devPollSniff, 300));
 }
 async function devPollLive() {
-  try { dev.live = await api("GET", "/api/device/live"); dev.stats = await api("GET", "/api/device/stats"); }
+  try { dev.live = await api("GET", "/api/device/live"); if (!devIsHub()) dev.stats = await api("GET", "/api/device/stats"); }
   catch (e) { dev.liveOn = false; devStop(); devErr(e); return; }
   const a = document.getElementById("devLive"); if (a) a.replaceChildren(devLiveBody());
   const b = document.getElementById("devStats"); if (b) b.replaceChildren(devStatsBody());
@@ -779,8 +785,33 @@ function hashChip(hash) {
   return h("span", {}, h2(hash), " ", h("span", { class: "chip " + (same ? "ok" : "warn") }, same ? "matches project" : "differs from project"));
 }
 const h2 = x => h("span", { class: "mono" }, x);
+function clockChip(actual, expected, what) {
+  if (!actual) return "unknown";
+  return [`${actual / 1e6} MHz `, actual === expected ? h("span", { class: "chip ok" }, "matches project")
+    : h("span", { class: "chip bad" }, `project expects ${expected / 1e6} MHz: ${what}`)];
+}
+function hubInfoBody(i) {
+  const row = (k, v) => [h("div", { class: "muted" }, k), h("div", {}, v)];
+  const ph = i.hub_id == null ? null : P.hubs.find(x => x.hub_id === i.hub_id);
+  const pc = P.channels.filter(c => c.enabled && c.source === "hub" && c.hub === i.hub_id);
+  const nAnalog = i.sensors.afe_a + i.sensors.afe_b, pAnalog = pc.filter(c => c.sensor_type !== "digital").length, pDig = pc.length - pAnalog;
+  const sensorsMatch = nAnalog === pAnalog && i.sensors.digital === pDig;
+  return h("div", { class: "form" },
+    ...row("Hub ID", i.hub_id == null ? [h("span", { class: "chip warn" }, "unknown"), " (firmware has no generated config with a hub ID)"]
+      : [`${i.hub_id} `, ph ? h("span", { class: "chip ok" }, `project: ${ph.name}`) : h("span", { class: "chip bad" }, "not defined in this project")]),
+    ...row("Firmware", i.fw_version), ...row("Device UID", h2(i.uid)),
+    ...row("Sensors in firmware", [`AFE A ${i.sensors.afe_a}, AFE B ${i.sensors.afe_b}, digital ${i.sensors.digital} `,
+      i.hub_id == null ? null : sensorsMatch ? h("span", { class: "chip ok" }, "matches project") : h("span", { class: "chip warn" }, `project has ${pAnalog} analog, ${pDig} digital for this hub: firmware config is out of date`)]),
+    ...row("CAN transmit", i.can_running ? h("span", { class: "chip ok" }, "running") : h("span", { class: "chip warn" }, "not started")),
+    ...row("CAN frames", `${i.tx.ok} sent, ${i.tx.failed} failed, ${i.tx.skipped} skipped (empty), ${i.tx.invalid} invalid config`),
+    ...row("CAN errors", [`TEC ${i.can.tec}, REC ${i.can.rec} `, i.can.bus_off ? h("span", { class: "chip bad" }, "BUS OFF") : null, i.can.error_passive ? h("span", { class: "chip warn" }, "error passive") : null]),
+    ...row("CAN kernel clock", clockChip(i.fdcan_kernel_hz, P.settings.hub_fdcan_kernel_hz, "bus rates will not be generated correctly")),
+    ...row("System clock", `${i.sysclk_hz / 1e6} MHz`), ...row("TCAN2410 int. register", h2("0x" + i.tcan_int.toString(16).toUpperCase().padStart(2, "0"))),
+    ...row("Uptime", `${(i.uptime_ms / 1000).toFixed(1)} s`));
+}
 function devInfoBody() {
   const i = dev.info; if (!i) return h("span", { class: "muted" }, "No info yet.");
+  if (i.device_type === "hub") return hubInfoBody(i);
   const row = (k, v) => [h("div", { class: "muted" }, k), h("div", {}, v)];
   return h("div", { class: "form" },
     ...row("Firmware", i.fw_version), ...row("Device UID", h2(i.uid)), ...row("CM4 (CAN core)", i.cm4_alive ? "running" : "NOT RESPONDING"),
@@ -790,8 +821,21 @@ function devInfoBody() {
       : h("span", { class: "chip bad" }, `project expects ${P.settings.head_fdcan_kernel_hz / 1e6} MHz: bus rates will not be generated correctly`)] : "unknown"),
     ...row("Uptime", `${(i.uptime_ms / 1000).toFixed(1)} s`));
 }
+function devHubLiveBody() {
+  const fmt = v => Number.isInteger(v) ? v : +v.toPrecision(6);
+  const hubId = dev.info ? dev.info.hub_id : null;
+  const byPin = new Map(P.channels.filter(c => c.enabled && c.source === "hub" && (hubId == null || c.hub === hubId) && c.pin_sig_pos != null).map(c => [c.pin_sig_pos, c]));
+  return h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Pin", "Input", "Channel", "Raw", "Calibrated", "Units"].map(c => h("th", {}, c)))),
+    h("tbody", {}, dev.live.slots.map(r => {
+      const pin = r.slot + 1, ch = byPin.get(pin);
+      return h("tr", { style: ch ? "" : "opacity:.45" }, h("td", {}, pin), h("td", { class: "muted" }, (() => { const hp = HW.conn1.find(x => x.pin === pin); return !hp ? "" : hp.afe ? `AFE ${hp.afe}${hp.index}` : hp.role === "digital" ? `DIN${hp.index}` : ""; })()),
+        h("td", {}, ch ? ch.name : "—"), h("td", { class: "mono" }, r.value),
+        h("td", { class: "mono" }, ch ? fmt(evalCal(ch, r.value)) : "—"), h("td", {}, ch ? ch.units : ""));
+    }))));
+}
 function devLiveBody() {
   if (!dev.live) return h("span", { class: "muted" }, "Press Start to poll values.");
+  if (dev.live.device_type === "hub") return devHubLiveBody();
   return h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Channel", "Raw", "Calibrated", "Units", "Status"].map(c => h("th", {}, c)))),
     h("tbody", {}, dev.live.channels.map(r => {
       const ch = P.channels.find(c => c.channel_id === r.channel_id);
@@ -802,7 +846,7 @@ function devLiveBody() {
     }))));
 }
 function devStatsBody() {
-  const s = dev.stats; if (!s) return h("span", { class: "muted" }, "—");
+  const s = dev.stats; if (!s || devIsHub()) return h("span", { class: "muted" }, devIsHub() ? "" : "—");
   return h("div", {}, s.buses.map((b, i) => h("div", {}, h("b", {}, `Bus ${i} ${P.buses[i] ? "(" + P.buses[i].id + ")" : ""}: `),
     `${b.rx_frames} rx, ${b.rx_matched} matched, ${b.rx_dropped} unmatched, ${b.fifo_lost} fifo-lost` + (b.tx_frames != null ? `, ${b.tx_frames} tx${b.tx_dropped ? ` (${b.tx_dropped} dropped)` : ""}` : ""), b.bus_off ? h("span", { class: "chip bad" }, "BUS OFF") : null, b.error_passive ? h("span", { class: "chip warn" }, "error passive") : null)),
     s.hub_lost.some(x => x) ? h("div", {}, "Estimated hub frames lost: ", s.hub_lost.map((x, i) => x ? `hub ${i}: ${x}` : null).filter(Boolean).join(", ")) : null);
@@ -842,17 +886,28 @@ function viewDevice() {
         ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/device/disconnect"); dev.connected = null; dev.info = null; dev.live = null; dev.liveOn = false; dev.sniffOn = false; dev.streak = 0; dev.lastOk = null; logEvent("info", "disconnected"); renderView(); } }, `Disconnect ${dev.connected}`)
         : h("button", { class: "btn primary", onclick: async () => {
             const port = portSel.value; if (!port) return;
-            try { const r = await api("POST", "/api/device/connect", { port, baud: dev.baud }); dev.connected = r.port; dev.info = r.info; dev.port = port; dev.streak = 0; dev.lastOk = Date.now(); dev.textSeq = 0; devOk(`connected to ${r.port}`); renderView(); } catch (e) { devErr(e); } } }, "Connect")),
+            try { const r = await api("POST", "/api/device/connect", { port, baud: dev.baud }); dev.connected = r.port; dev.info = r.info; dev.live = null; dev.frames = []; dev.port = port; dev.streak = 0; dev.lastOk = Date.now(); dev.textSeq = 0; devOk(`connected to ${devName() || "device"} on ${r.port}`); renderView(); } catch (e) { devErr(e); } } }, "Connect")),
     null);
-  if (!connected) return h("div", {}, conn, devConsoleCard(), h("p", { class: "muted" }, "The web app talks to the head module over the same UART4 link the debug console uses (binary protocol, see docs/protocol.md). Close any serial terminal first."));
+  if (!connected) return h("div", {}, conn, devConsoleCard(), h("p", { class: "muted" }, "The web app talks to a head or hub module over the ST-LINK virtual COM port (binary protocol, see docs/protocol.md) and shows the matching screen for whichever it finds. Close any serial terminal first."));
+  if (devIsHub()) return h("div", {}, conn, devConsoleCard(),
+    h("div", { class: "card" }, h("h3", {}, `Hub module${dev.info.hub_id == null ? "" : " " + dev.info.hub_id}`), h("div", { id: "devInfo" }, devInfoBody()),
+      h("div", { class: "toolbar", style: "margin-top:10px" },
+        h("button", { class: "btn", onclick: async () => { if (!confirm(`Reboot the ${devName()}?`)) return; try { await api("POST", "/api/device/reboot"); dev.connected = null; dev.info = null; dev.lastOk = null; devOk("rebooting; reconnect in a moment"); renderView(); } catch (e) { devErr(e); } } }, "Reboot"),
+        h("button", { class: "btn", onclick: () => devRefreshInfo() }, "Refresh"),
+        h("span", { class: "muted" }, "Config upload to hubs is not available yet; the hub runs its compiled-in config.")),
+    ),
+    h("div", { class: "card" }, h("h3", {}, "Live sensor values"),
+      h("div", { class: "toolbar" }, h("button", { class: "btn" + (dev.liveOn ? "" : " primary"), onclick: () => { dev.liveOn = !dev.liveOn; renderView(); if (dev.liveOn) devPollLive(); } }, dev.liveOn ? "Stop" : "Start"),
+        h("span", { class: "muted" }, "Raw ADC / digital values from the hub's live table, one row per connector pin. Values stay 0 until the hub's AFE acquisition is running.")),
+      h("div", { id: "devLive" }, devLiveBody())));
   const cards = [conn, devConsoleCard(),
-    h("div", { class: "card" }, h("h3", {}, "Device"), h("div", { id: "devInfo" }, devInfoBody()),
+    h("div", { class: "card" }, h("h3", {}, "Head module"), h("div", { id: "devInfo" }, devInfoBody()),
       h("div", { class: "toolbar", style: "margin-top:10px" },
         h("button", { class: "btn primary", onclick: () => devUpload(true, false) }, "Upload & apply"),
         h("button", { class: "btn", onclick: () => devUpload(true, true) }, "Upload, apply & store in flash"),
         h("button", { class: "btn", onclick: async () => { try { dev.cfg = await api("GET", "/api/device/config?source=active"); devOk(`Active config: ${dev.cfg.bytes} bytes, hash ${dev.cfg.hash}, ` + Object.entries(dev.cfg.counts).map(([k, v]) => `${v} ${k}`).join(", ")); } catch (e) { devErr(e); } } }, "Read back active config"),
         h("button", { class: "btn", onclick: async () => { if (!confirm("Erase the stored config and revert to the compiled-in default?")) return; try { await api("POST", "/api/device/clear", { revert: true }); devOk("Stored config erased; default config active."); } catch (e) { devErr(e); } devRefreshInfo(); } }, "Revert to default"),
-        h("button", { class: "btn", onclick: async () => { if (!confirm("Reboot the head module?")) return; try { await api("POST", "/api/device/reboot"); dev.connected = null; dev.info = null; dev.lastOk = null; devOk("rebooting; reconnect in a moment"); renderView(); } catch (e) { devErr(e); } } }, "Reboot"),
+        h("button", { class: "btn", onclick: async () => { if (!confirm(`Reboot the ${devName() || "device"}?`)) return; try { await api("POST", "/api/device/reboot"); dev.connected = null; dev.info = null; dev.lastOk = null; devOk("rebooting; reconnect in a moment"); renderView(); } catch (e) { devErr(e); } } }, "Reboot"),
         h("button", { class: "btn", onclick: () => devRefreshInfo() }, "Refresh"))),
     h("div", { class: "card" }, h("h3", {}, "Live values"),
       h("div", { class: "toolbar" }, h("button", { class: "btn" + (dev.liveOn ? "" : " primary"), onclick: () => { dev.liveOn = !dev.liveOn; renderView(); if (dev.liveOn) devPollLive(); } }, dev.liveOn ? "Stop" : "Start"),

@@ -67,6 +67,9 @@ Error codes: 1 bad request, 2 busy/bad state, 3 too big, 4 crc mismatch, 5 inval
 | type | name | request payload | response payload |
 |---|---|---|---|
 | 0x01 | INFO | - | `u8 proto_ver, u8 blob_ver, u16 fw_version, u32 uptime_ms, u64 active_hash, u64 stored_hash, u8 active_source(0 default,1 flash,2 uploaded), u8 cm4_alive, u16 max_channels, u16 max_blob, u16 channel_count, u8[12] uid, u32 fdcan_kernel_hz` (the last field is absent on older firmware) |
+| 0x07 | IDENT | - | `u8 device_type (1 head, 2 hub), u8 proto_ver, u16 fw_version, u8 instance (hub id, 0xFF none), u8 rsvd, u8[12] uid`. Sent first by the app to pick the matching screen; firmware older than IDENT answers "unsupported", which the app treats as a head. |
+| 0x01 (hub) | INFO | - | Hub payload (56 B): `u8 proto_ver, u8 rsvd, u16 fw_version, u32 uptime_ms, u8 hub_id, u8 flags(bit0 CAN scheduler running), u8 a_count, u8 b_count, u8 dig_count, u8 tcan_int, u8 tec, u8 rec, u8 bus_off, u8 passive, u16 rsvd, u32 sysclk_hz, u32 fdcan_kernel_hz, u32 tx_ok, u32 tx_fail, u32 tx_skipped, u32 tx_invalid, u8[12] uid` |
+| 0x10 (hub) | LIVE_GET | `u16 first, u16 count` | Same layout as the head, but a slot is a connector pin (slot = pin - 1, 24 slots); flags are always 0 |
 | 0x02 | CFG_BEGIN | `u32 total_len, u32 blob_crc32` | `u16 max_chunk` |
 | 0x03 | CFG_CHUNK | `u32 offset, bytes` | `u32 received` (offset must equal `received`) |
 | 0x04 | CFG_COMMIT | `u8 flags` (bit0 apply, bit1 store to flash) | `u8 applied, u8 stored, u64 hash` |
@@ -80,3 +83,16 @@ Error codes: 1 bad request, 2 busy/bad state, 3 too big, 4 crc mismatch, 5 inval
 | 0x70 | REBOOT | - | - (reply sent first) |
 
 A config upload is: `CFG_BEGIN`, N x `CFG_CHUNK`, `CFG_COMMIT`. A new `CFG_BEGIN` discards any partial upload.
+
+## 4. Hub module
+
+The hub speaks the same framing and message numbering (`SensorHubV1/Core/Src/hub_proto.c`, `hub_link.c`; `hframe.c/.h` are
+copies of `Common/`, a test fails if they drift). Implemented: IDENT, INFO, LIVE_GET, REBOOT and the ASCII debug commands.
+CFG_*, STATS_GET and SNIFF_SET answer "unsupported" until hub runtime config exists.
+
+**Configuration ownership.** The project file in the app is the single source of truth. Both the head and the hubs are
+*targets* the app writes to; neither is the authority. Hub configuration is generated for the hub (compiled-in today,
+a binary blob later), loaded over its own UART for bench work or pushed by the head over CAN (`0x40-0x4F`, reserved).
+Each device reports its active config hash, so the app and the head can see which devices run an outdated config.
+Editing a hub directly and propagating that to the head is deliberately not supported: the head derives everything it
+needs (frame layout, filters, channel routing) from the project, so a hub-side edit would silently desynchronise it.
