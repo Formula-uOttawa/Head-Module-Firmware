@@ -1,3 +1,0 @@
-../Core/Src/tcan.c:15:6:TCAN2410Init	16	static
-../Core/Src/tcan.c:50:6:TCANSpiWrite	32	static
-../Core/Src/tcan.c:81:6:TCANSpiRead	32	static

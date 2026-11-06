@@ -1,3 +1,24 @@
-CM7/Debug/**
-**./Release/**
+# STM32CubeIDE build output (any config, any core)
+**/Debug/
+**/Release/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.srec
+*.hex
+
+# macOS / editors
+.DS_Store
+
+# python (Master Configuration)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# datasheets kept locally
 tcan2410-q1.pdf
