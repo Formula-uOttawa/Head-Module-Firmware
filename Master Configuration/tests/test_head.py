@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from canharness import rxdecode
+from canharness import hwmap, rxdecode
 from canharness.generators.head_c import generate_head, plan_filters
 from canharness.model import Bus, Channel, Hub, Project, RxFrame, RxSignal, SensorType
 from canharness.validate import errors, validate
@@ -135,7 +135,11 @@ def test_firmware_decode_matches_reference(tmp_path):
                 raw = int.from_bytes(data[pl.offset:pl.offset + pl.length], "little")
                 if pl.channel.signed and raw & (1 << (8 * pl.length - 1)):
                     raw -= 1 << (8 * pl.length)
-                vals[slot[pl.channel.channel_id]] = ("i" if pl.channel.signed else "u", raw)
+                if pl.channel.sensor_type != SensorType.DIGITAL:  # analog hub channel: float volts, code -8388608 = "no sample" (not stored)
+                    if raw != -8388608:
+                        vals[slot[pl.channel.channel_id]] = ("f", raw * hwmap.counts_to_base(pl.channel.sensor_type.value, p.settings.afe_vref_v))
+                else:
+                    vals[slot[pl.channel.channel_id]] = ("i" if pl.channel.signed else "u", raw)
         else:
             f = p.rx_frames[pick - 1]
             data = bytes(rng.randrange(256) for _ in range(8))
@@ -280,6 +284,9 @@ def test_firmware_tx_matches_reference(tmp_path):
             if c.source == "can_rx":
                 v = rng.choice([0.0, rng.uniform(-500, 500), rng.uniform(-1e6, 1e6)])
                 bits.append(struct.unpack("<I", struct.pack("<f", v))[0]); vals[c.channel_id] = struct.unpack("<f", struct.pack("<f", v))[0]
+            elif c.source == "hub" and c.sensor_type != SensorType.DIGITAL:  # analog hub channel: float volts
+                v = struct.unpack("<f", struct.pack("<f", rng.uniform(-5, 5)))[0]
+                bits.append(struct.unpack("<I", struct.pack("<f", v))[0]); vals[c.channel_id] = v
             elif c.signed:
                 v = rng.randrange(-200, 200) if rng.random() < .8 else rng.randrange(-2**31, 2**31)
                 bits.append(v & 0xFFFFFFFF); vals[c.channel_id] = float(v)

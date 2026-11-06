@@ -9,6 +9,9 @@
       100,
       200
     ],
+    "head_fdcan_kernel_hz": 80000000,
+    "hub_fdcan_kernel_hz": 80000000,
+    "afe_vref_v": 5.0,
     "udp_ip": "192.168.1.10",
     "udp_port": 5005
   },
@@ -30,7 +33,7 @@
       "name": "Hub bus",
       "role": "hub",
       "type": "can_fd",
-      "bitrate": 320000,
+      "bitrate": 500000,
       "data_bitrate": 5000000,
       "head_peripheral": "FDCAN1",
       "std_filters": 0,
@@ -601,5 +604,6 @@
       "notes": ""
     }
   ],
-  "rx_frames": []
+  "rx_frames": [],
+  "tx_frames": []
 }

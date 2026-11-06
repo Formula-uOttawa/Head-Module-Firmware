@@ -23,6 +23,40 @@ POWER_CONNECTOR_PINS = 34
 AFE_SPS = {1: 4000, 2: 100}
 
 
+# PGA gain and reference of each analog sensor type (the register recipes below): active = PGA off; resistive = PGA on, gain 1;
+# thermocouple = gain 128 and the internal 2.5 V reference. All other types use the external reference REFP0/REFN0.
+AFE_GAIN = {"active": 1, "resistive": 1, "thermocouple": 128}
+INTERNAL_REF_V = 2.5
+ADC_FULL_SCALE_CODE = 1 << 23  # bipolar 24 bit: +/- full scale = +/- 2^23 codes
+
+
+def volts_per_count(sens_type: str, vref: float) -> float:
+    """Volts at the ADC input per raw code: code / 2^23 * Vref / gain (the voltage at the sensor pin, before the PGA)."""
+    ref = INTERNAL_REF_V if sens_type == "thermocouple" else vref
+    return ref / AFE_GAIN[sens_type] / ADC_FULL_SCALE_CODE
+
+
+# IDAC current of each IMAG code (IDACMAG register, datasheet table); codes 0 and 10..15 = off
+IDAC_UA = {1: 10, 2: 50, 3: 100, 4: 250, 5: 500, 6: 750, 7: 1000, 8: 1500, 9: 2000}
+
+
+def excitation_current_a(sens_type: str) -> float:
+    """Current the hub drives into the input pin of this sensor type, in amperes (0 = none): the resistive recipe's IDAC, 1 mA."""
+    return IDAC_UA.get(idacmag(sens_type) & 0x0F, 0) * 1e-6 if sens_type == "resistive" else 0.0
+
+
+def base_unit(sens_type: str) -> str:
+    """Unit the head distributes for an analog hub channel: ohms for excitation-current (resistive) inputs, volts otherwise."""
+    return "ohm" if excitation_current_a(sens_type) > 0 else "V"
+
+
+def counts_to_base(sens_type: str, vref: float) -> float:
+    """Multiplier from the raw 24 bit code to the head's value: volts per code, divided by the excitation current for ohms (R = V / I)."""
+    vpc = volts_per_count(sens_type, vref)
+    i = excitation_current_a(sens_type)
+    return vpc / i if i > 0 else vpc
+
+
 def resolve_pin(pin: int) -> tuple[int, int]:
     """Return (afe, afe_pin). afe 1 = AFE A, 2 = AFE B, 3 = digital input."""
     if pin in TC_NEG_PINS:

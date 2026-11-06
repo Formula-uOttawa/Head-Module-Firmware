@@ -1,4 +1,5 @@
 import shutil
+import struct
 import subprocess
 
 import pytest
@@ -36,7 +37,7 @@ def test_connect_upload_download_live(api):
     cfg = c.get("/api/device/config", params={"source": "stored"}).json()
     assert cfg["hash"] == p.config_hash() and cfg["counts"]["channels"] == len([ch for ch in p.channels if ch.enabled])
     live = c.get("/api/device/live").json()
-    assert live["hash"] == p.config_hash() and live["channels"][0]["channel_id"] == 1 and live["channels"][0]["value"] == 7
+    assert live["hash"] == p.config_hash() and live["channels"][0]["channel_id"] == 1 and live["channels"][0]["value"] == pytest.approx(struct.unpack("<f", struct.pack("<I", 7))[0])  # analog hub channels are float volts
     assert live["channels"][1]["stale"] is True
     assert c.get("/api/device/stats").json()["hub_lost"][0] == 9
 

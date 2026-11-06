@@ -66,7 +66,12 @@ static bool process_hub(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *
                 v |= (uint32_t)data[rt->offset + b] << (8 * b);
             if (rt->is_signed && rt->length < 4 && (v & (1u << (8 * rt->length - 1))))
                 v |= ~0u << (8 * rt->length);
-            live->values[rt->slot].u = v;
+            if ((rt->flags & HEAD_ROUTE_NO_DATA) && (int32_t)v == HEAD_NO_DATA_CODE)
+                continue; /* the hub had no fresh sample: keep the old value, do not refresh the timestamp (the channel goes stale) */
+            if (rt->flags & HEAD_ROUTE_SCALED)
+                live->values[rt->slot].f = (rt->is_signed ? (float)(int32_t)v : (float)v) * rt->multiplier + rt->value_offset;
+            else
+                live->values[rt->slot].u = v;
             mark_rx(live, rt->slot, now_ms);
         }
         if (stats && !handled) { /* frame counter: ID bits 15..8, one 8-bit counter per hub that steps once per transmitted frame */

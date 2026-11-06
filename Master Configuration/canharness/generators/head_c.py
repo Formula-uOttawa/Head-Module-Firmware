@@ -8,7 +8,7 @@ Outputs (all deterministic, identical inputs -> identical files):
 
 from __future__ import annotations
 
-from .. import canid
+from .. import canid, hwmap
 from ..model import Project, SensorType, timeout_for_rate
 from ..packing import pack
 
@@ -65,7 +65,11 @@ def head_tables(project: Project) -> dict[str, list[tuple]]:
     for f in frames:
         hub_frames.append((f.id_base, HUB_FRAME_MASK, f.hub, f.payload_bytes, len(routes), len(f.placements), 0))
         for p in f.placements:
-            routes.append((slot[p.channel.channel_id], p.offset, p.length, int(p.channel.signed)))
+            ch = p.channel
+            if ch.source == "hub" and ch.sensor_type != SensorType.DIGITAL:  # AFE code -> float volts (ohms for resistive inputs); code -8388608 = no sample
+                routes.append((slot[ch.channel_id], p.offset, p.length, int(ch.signed), 3, hwmap.counts_to_base(ch.sensor_type.value, project.settings.afe_vref_v), 0.0))
+            else:
+                routes.append((slot[ch.channel_id], p.offset, p.length, int(ch.signed), 0, 1.0, 0.0))
 
     rx_frames, rx_signals = [], []
     for rf in project.rx_frames:
@@ -92,7 +96,8 @@ def head_tables(project: Project) -> dict[str, list[tuple]]:
             frame = next((rf for rf in project.rx_frames if any(s.channel_id == c.channel_id for s in rf.signals)), None)
             channels.append((c.channel_id, 2, 1, c.sample_rate_hz, 0, frame.timeout_ms if frame else 1000))
         else:
-            channels.append((c.channel_id, 1 if c.signed else 0, 0, c.sample_rate_hz, 0, timeout_for_rate(c.sample_rate_hz)))
+            vtype = 2 if c.sensor_type != SensorType.DIGITAL else (1 if c.signed else 0)  # analog hub channels are float volts
+            channels.append((c.channel_id, vtype, 0, c.sample_rate_hz, 0, timeout_for_rate(c.sample_rate_hz)))
 
     buses, filters = [], []
     for i, b in enumerate(project.buses):

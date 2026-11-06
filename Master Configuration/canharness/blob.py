@@ -18,7 +18,7 @@ LIMITS = {"channels": 256, "hub_frames": 64, "hub_routes": 512, "rx_frames": 64,
 SECTIONS = {
     1: ("channels", "<HBBHHI", 12),
     2: ("hub_frames", "<IIBBHHH", 16),
-    3: ("hub_routes", "<HBBB3x", 8),
+    3: ("hub_routes", "<HBBBB2xff", 16),
     4: ("rx_frames", "<BBBBIIIHHBBH", 24),
     5: ("rx_signals", "<HBBBBBBhHff", 20),
     6: ("buses", "<BBBBII", 12),

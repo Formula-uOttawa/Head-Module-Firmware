@@ -156,6 +156,9 @@ class Settings(BaseModel):
     # The head reports its real clock in INFO, so the Device tab warns if the board differs from this setting.
     head_fdcan_kernel_hz: int = 80_000_000
     hub_fdcan_kernel_hz: int = 80_000_000
+    # Voltage of the ADS124S08 reference REFP0/REFN0 (the hub ties it to the 5 V rail): full scale of the resistive and active channels.
+    # Thermocouple channels use the internal 2.5 V reference. The head converts AFE codes to volts with it.
+    afe_vref_v: float = Field(default=5.0, gt=0.5, le=5.5)
     udp_ip: str = "192.168.1.10"
     udp_port: int = 5005
 

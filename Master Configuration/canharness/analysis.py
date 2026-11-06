@@ -73,4 +73,6 @@ def hw_info() -> dict:
         "tc_neg_pins": list(hwmap.TC_NEG_PINS),
         "rate_codes": sorted(canid.RATE_CODES),
         "afe_sps": hwmap.AFE_SPS,
+        # analog value chain of the head: volts per ADC code = ref / gain / 2^23; resistive inputs are ohms = volts / excitation current
+        "afe": {"gain": hwmap.AFE_GAIN, "internal_ref_v": hwmap.INTERNAL_REF_V, "excitation_a": {t: hwmap.excitation_current_a(t) for t in hwmap.AFE_GAIN}},
     }

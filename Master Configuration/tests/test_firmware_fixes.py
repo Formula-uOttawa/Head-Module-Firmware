@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from canharness import blob as blobmod
+from canharness import hwmap
 from canharness.device.framing import encode_frame
 from canharness.generators.head_c import head_tables
 from canharness.model import Project
@@ -401,3 +402,71 @@ def test_console_text_filter_and_hex(text_exe):
     assert out == ["p 1", "p 1", "p 0", "p 0", "p 0", "p 0",
                    "h 1 0f 5a", "h 1 0f 5a", "h 0", "h 0", "h 0", "h 0", "h 0", "h 0",
                    "w 1", "w 1", "w 1", "w 1", "w 1", "w 0", "w 0", "w 0", "w 0", "w 0", "w 0", "w 0"]
+
+
+# ---- AFE volts -----------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("vref", [5.0, 3.3])
+def test_analog_hub_channel_is_float_base_unit_and_no_data_code_goes_stale(tmp_path, vref):
+    """Analog hub channels are scaled to float32 volts in the head (code / 2^23 * Vref); the hub's "no sample" code -8388608 is not stored."""
+    from canharness.packing import pack
+    p = sample_project()
+    p.settings.afe_vref_v = vref
+    (tmp_path / "cfg.blob").write_bytes(blobmod.build(p))
+    exe = build_sim(tmp_path, "decode_sim", ["head_cfg.c", "head_decode.c"])
+    fr = next(f for f in pack(p)[0] if f.rate_hz == 200)
+    pl = next(x for x in fr.placements if x.channel.channel_id == 1)
+    chans = sorted((c for c in p.channels if c.enabled), key=lambda c: c.channel_id)
+    slot = [c.channel_id for c in chans].index(1)
+
+    def frame(code, ts):
+        data = bytearray(16)
+        data[pl.offset:pl.offset + 3] = (code & 0xFFFFFF).to_bytes(3, "little")
+        return f"0 {fr.id_base:x} 1 {bytes(data).hex()} {ts}"
+
+    lines = [frame(0x400000, 0), frame(-0x200000, 1), frame(-8388608, 2), frame(8388607, 100)]
+    out = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(lines) + "\n", capture_output=True, text=True).stdout.splitlines()[1:]
+    cell = lambda i: out[i].split()[1 + slot]
+    f = lambda i: struct.unpack("<f", int(cell(i).split(":")[0], 16).to_bytes(4, "little"))[0]
+    unit = 1.0 / hwmap.excitation_current_a(p.channels[0].sensor_type.value) if p.channels[0].sensor_type.value == "resistive" else 1.0  # ohms per volt
+    assert f(0) == pytest.approx(0.5 * vref * unit, rel=1e-6)    # half scale
+    assert f(1) == pytest.approx(-0.25 * vref * unit, rel=1e-6)  # negative code, sign extended from 3 bytes
+    assert f(2) == f(1) and cell(2).endswith(":0")               # "no sample": value and freshness unchanged here ...
+    assert f(3) == pytest.approx(8388607 / 2**23 * vref * unit, rel=1e-6)
+
+
+def _blob_with_route(mutator):
+    b = bytearray(blobmod.build(sample_project()))
+    off, nsec = 32, struct.unpack_from("<I", b, 12)[0]
+    for _ in range(nsec):
+        sid, esize, count = struct.unpack_from("<HHI", b, off)
+        if sid == 3:
+            mutator(b, off + 8, esize)
+        off += 8 + esize * count
+    b[28:32] = b"\0\0\0\0"
+    b[28:32] = struct.pack("<I", zlib.crc32(bytes(b)))
+    return bytes(b)
+
+
+def _route(b, o, e, pred):
+    """offset of the first route element (elements start at o, size e) for which pred(flags, length) holds"""
+    for i in range(len(b)):
+        q = o + i * e
+        if b[q + 4] is None or q + e > len(b):
+            break
+        if pred(b[q + 5], b[q + 3]):
+            return q
+    raise AssertionError("no such route")
+
+
+@pytest.mark.parametrize("why,mut", [
+    ("unknown flag", lambda b, o, e: b.__setitem__(_route(b, o, e, lambda f, n: True) + 5, 0x10)),
+    ("scaled but integer channel", lambda b, o, e: b.__setitem__(_route(b, o, e, lambda f, n: f == 0) + 5, 1)),
+    ("NaN multiplier", lambda b, o, e: b.__setitem__(slice(_route(b, o, e, lambda f, n: f == 3) + 8, _route(b, o, e, lambda f, n: f == 3) + 12), struct.pack("<I", 0x7FC00000))),
+    ("no-data flag on a 1 byte field", lambda b, o, e: b.__setitem__(_route(b, o, e, lambda f, n: f == 0 and n == 1) + 5, 2)),
+])
+def test_route_flags_rejected(tmp_path, why, mut):
+    exe = build_sim(tmp_path, "decode_sim", ["head_cfg.c", "head_decode.c"])
+    (tmp_path / "bad.blob").write_bytes(_blob_with_route(mut))
+    out = subprocess.run([str(exe), str(tmp_path / "bad.blob")], input="", capture_output=True, text=True).stdout.splitlines()
+    assert out[0].startswith("cfg ") and not out[0].startswith("cfg 0 ok"), why

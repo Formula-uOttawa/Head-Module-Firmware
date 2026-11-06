@@ -163,8 +163,8 @@ static void test_decode(void)
     cfg.hub_frame_count = 1;
     cfg.hub_frames[0] = (HeadHubFrame_t){ 0x00200000, 0x1FFF0000, 0, 2, 0, 2 };
     cfg.hub_route_count = 2;
-    cfg.hub_routes[0] = (HeadHubRoute_t){ 0, 0, 2, 0 };
-    cfg.hub_routes[1] = (HeadHubRoute_t){ 1, 4, 2, 0 }; /* offset 4..5, but only 3 bytes arrive */
+    cfg.hub_routes[0] = (HeadHubRoute_t){ 0, 0, 2, 0, 0, 1.0f, 0.0f };
+    cfg.hub_routes[1] = (HeadHubRoute_t){ 1, 4, 2, 0, 0, 1.0f, 0.0f }; /* offset 4..5, but only 3 bytes arrive */
     uint8_t d[64];
     memset(d, 0xEE, sizeof d);
     d[0] = 0x34; d[1] = 0x12; d[2] = 0;
@@ -180,7 +180,7 @@ static void test_decode(void)
     cfg.hub_frame_count = 1;
     cfg.hub_frames[0] = (HeadHubFrame_t){ 0x00200000, 0x1FFF0000, 0, 1, 0, 1 };
     cfg.hub_route_count = 1;
-    cfg.hub_routes[0] = (HeadHubRoute_t){ 0, 0, 1, 0 };
+    cfg.hub_routes[0] = (HeadHubRoute_t){ 0, 0, 1, 0, 0, 1.0f, 0.0f };
     static const uint8_t ctr[] = { 10, 10, 11, 14, 14, 15, 14 };
     for (unsigned i = 0; i < sizeof ctr; i++)
         HeadDecode_Process(&cfg, &live, &stats, 0, 0x00200000u | ((uint32_t)ctr[i] << 8), true, d, 1, i);
@@ -299,7 +299,7 @@ static uint8_t o_clear(void *c, uint8_t f) { (void)c; (void)f; return 0; }
 static uint16_t o_live(void *c, uint16_t first, uint16_t count, uint8_t *dst) { (void)c; (void)first; ops_live_count = count; memset(dst, 0, 5u * count); return count; }
 static uint8_t o_sniff(void *c, uint8_t b, uint8_t e) { (void)c; (void)b; (void)e; return 0; }
 static void o_reboot(void *c) { (void)c; }
-static const HprotoOps_t ops = { o_info, o_commit, o_read, o_clear, o_live, NULL, o_sniff, o_reboot };
+static const HprotoOps_t ops = { o_info, o_commit, o_read, o_clear, o_live, NULL, o_sniff, NULL, o_reboot };
 
 static size_t call(Hproto_t *p, uint8_t type, const uint8_t *pl, size_t n, uint8_t *resp, size_t cap)
 {

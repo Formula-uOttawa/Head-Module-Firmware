@@ -164,6 +164,12 @@ static HeadCfgStatus_t validate(HeadConfig_t *c)
         const HeadHubRoute_t *r = &c->hub_routes[i];
         if (r->slot >= c->channel_count || r->length < 1 || r->length > 4 || (uint32_t)r->offset + r->length > HEAD_MAX_FRAME_BYTES)
             return HEAD_CFG_ERR_RANGE;
+        if (r->flags & ~(HEAD_ROUTE_SCALED | HEAD_ROUTE_NO_DATA))
+            return HEAD_CFG_ERR_RANGE;
+        if ((r->flags & HEAD_ROUTE_SCALED) && (c->channels[r->slot].value_type != HEAD_VALUE_F32 || !finite_f(r->multiplier) || !finite_f(r->value_offset)))
+            return HEAD_CFG_ERR_RANGE; /* scaled values are floats */
+        if ((r->flags & HEAD_ROUTE_NO_DATA) && (r->length < 3 || !r->is_signed))
+            return HEAD_CFG_ERR_RANGE;
     }
     for (uint32_t i = 0; i < c->rx_frame_count; i++) {
         const HeadRxFrame_t *f = &c->rx_frames[i];
@@ -251,7 +257,7 @@ static HeadCfgStatus_t parse_sections(const uint8_t *b, uint32_t len, HeadConfig
             if (count > HEAD_MAX_HUB_ROUTES) return HEAD_CFG_ERR_LIMIT;
             c->hub_route_count = (uint16_t)count;
             for (uint32_t i = 0; i < count; i++, p += esize)
-                c->hub_routes[i] = (HeadHubRoute_t){ rd16(p), p[2], p[3], p[4] };
+                c->hub_routes[i] = (HeadHubRoute_t){ rd16(p), p[2], p[3], p[4], p[5], esize >= 16 ? rdf(p + 8) : 1.0f, esize >= 16 ? rdf(p + 12) : 0.0f };
             break;
         case 4:
             if (count > HEAD_MAX_RX_FRAMES) return HEAD_CFG_ERR_LIMIT;

@@ -44,7 +44,13 @@ typedef union { uint32_t u; int32_t i; float f; } HeadValue_t;
 typedef struct { uint16_t channel_id; uint8_t value_type; uint8_t source; uint16_t rate_hz; uint32_t timeout_ms; } HeadChannel_t;
 /* matched with (id & id_mask) == id_base; payload must be at least min_len bytes */
 typedef struct { uint32_t id_base; uint32_t id_mask; uint8_t hub; uint8_t min_len; uint16_t first_route; uint16_t route_count; } HeadHubFrame_t;
-typedef struct { uint16_t slot; uint8_t offset; uint8_t length; uint8_t is_signed; } HeadHubRoute_t;
+/* flags: HEAD_ROUTE_SCALED = the channel (value type F32) gets (float)raw * multiplier + value_offset, e.g. volts for an AFE code;
+   HEAD_ROUTE_NO_DATA = the hub sends the 24-bit code -8388608 for "no sample" (length >= 3, signed): such a value is not stored,
+   so the channel simply goes stale. Blobs with 8-byte route elements (older app) have flags 0 and no scaling. */
+#define HEAD_ROUTE_SCALED 0x01u
+#define HEAD_ROUTE_NO_DATA 0x02u
+#define HEAD_NO_DATA_CODE (-8388608)
+typedef struct { uint16_t slot; uint8_t offset; uint8_t length; uint8_t is_signed; uint8_t flags; float multiplier; float value_offset; } HeadHubRoute_t;
 typedef struct {
     uint8_t bus; uint8_t extended; uint8_t dlc; uint8_t mux_enabled;
     uint32_t can_id; uint32_t id_mask; uint32_t timeout_ms;
