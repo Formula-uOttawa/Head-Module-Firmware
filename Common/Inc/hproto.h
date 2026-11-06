@@ -20,7 +20,7 @@
 typedef enum {
     HMSG_INFO = 0x01, HMSG_CFG_BEGIN = 0x02, HMSG_CFG_CHUNK = 0x03, HMSG_CFG_COMMIT = 0x04, HMSG_CFG_READ = 0x05,
     HMSG_CFG_CLEAR = 0x06, HMSG_IDENT = 0x07, HMSG_LIVE_GET = 0x10, HMSG_STATS_GET = 0x11, HMSG_SNIFF_SET = 0x30, HMSG_SNIFF_FRAME = 0xB1,
-    HMSG_REBOOT = 0x70, HMSG_ERROR = 0xFF
+    HMSG_HUB_RELAY = 0x40, HMSG_REBOOT = 0x70, HMSG_ERROR = 0xFF
 } HprotoType_t;
 
 typedef enum {
@@ -41,6 +41,7 @@ typedef enum {
 /* STATS payload size for nbus buses (nbus <= HEAD_MAX_BUSES): see Hproto_EncodeStats */
 #define HPROTO_STATS_LEN(nbus) (1u + 18u * (nbus) + 1u + 32u + 1u + 8u * (nbus) + 12u)
 #define HPROTO_REBOOT_MAGIC 0xB007F00Du /* REBOOT payload: this value, u32 little endian; anything else -> HERR_BAD_REQUEST */
+#define HPROTO_RELAY_MAX_REQ 249u /* HMSG_HUB_RELAY request payload = u8 hub, u16 timeout_ms, then the hub message (<= this many bytes); the reply payload is u8 hub + the hub's reply */
 #define HPROTO_COMMIT_REPLY_LEN 11u /* applied, stored, u64 hash, u8 store_err (older hosts ignore the trailing byte) */
 
 typedef struct {
@@ -83,6 +84,14 @@ typedef struct {
     /* writes the STATS_GET response payload; returns its length (0 = unsupported) */
     uint16_t (*stats_get)(void *ctx, uint8_t *dst, uint16_t cap);
     uint8_t (*sniff_set)(void *ctx, uint8_t bus, uint8_t enable);
+    /*
+     * Forward one message (req = type, seq, payload of the hub protocol) to hub `hub` over the hub bus and wait for its reply
+     * (hcanlink.h) for at most timeout_ms (0 = the default, HRELAY_TIMEOUT_MS; larger values are clamped to it). On success copies the hub's reply message (type, seq, payload) into rsp (at most cap bytes), sets *rsp_len and
+     * returns HERR_NONE; HERR_TIMEOUT if the hub did not answer, HERR_UNSUPPORTED without a hub bus, HERR_BUSY while another
+     * relay is in flight. NULL = unsupported.
+     */
+    uint8_t (*hub_relay)(void *ctx, uint8_t hub, uint16_t timeout_ms, const uint8_t *req, uint16_t req_len, uint8_t *rsp, uint16_t cap,
+                         uint16_t *rsp_len);
     void (*reboot)(void *ctx);
 } HprotoOps_t;
 

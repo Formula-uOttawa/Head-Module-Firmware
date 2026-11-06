@@ -240,6 +240,22 @@ size_t Hproto_Handle(Hproto_t *p, const uint8_t *msg, size_t len, uint8_t *resp,
             return error(type, seq, HERR_BAD_REQUEST, resp);
         rc = ops->sniff_set ? ops->sniff_set(p->ctx, pl[0], pl[1]) : HERR_UNSUPPORTED;
         return rc ? error(type, seq, rc, resp) : reply(type, seq, resp, 0);
+    case HMSG_HUB_RELAY: {
+        if (n < 5 || n - 3u > HPROTO_RELAY_MAX_REQ)
+            return error(type, seq, HERR_BAD_REQUEST, resp);
+        if (!ops->hub_relay)
+            return error(type, seq, HERR_UNSUPPORTED, resp);
+        if (cap < 4u)
+            return error(type, seq, HERR_RANGE, resp);
+        uint16_t rl = 0;
+        rc = ops->hub_relay(p->ctx, pl[0], rd16(pl + 1), pl + 3, (uint16_t)(n - 3u), out + 1, (uint16_t)(cap - 3u), &rl);
+        if (rc)
+            return error(type, seq, rc, resp);
+        if (rl > cap - 3u)
+            return error(type, seq, HERR_RANGE, resp); /* never trust the platform with the reply size */
+        out[0] = pl[0];
+        return reply(type, seq, resp, 1u + rl);
+    }
     case HMSG_REBOOT:
         if (n != 4 || rd32(pl) != HPROTO_REBOOT_MAGIC)
             return error(type, seq, HERR_BAD_REQUEST, resp); /* a stray or malformed message must never reset the module */

@@ -1,11 +1,11 @@
-import re
 from pathlib import Path
 
 import pytest
 
 from canharness import canid
 from canharness.generators.dash_json import generate_dash
-from canharness.generators.hub_c import generate_hub
+from canharness import hubblob
+from canharness.generators.hub_c import hub_sensor_rows
 from canharness.legacy import import_yaml
 from canharness.model import Channel, Hub, Project, SensorType
 from canharness.packing import pack
@@ -13,7 +13,6 @@ from canharness.validate import errors, validate
 
 HUB_DIR = Path(__file__).resolve().parents[3] / "SensorHubV1"
 LEGACY_YAML = HUB_DIR / "config" / "rear_sensor_config.yaml"
-LEGACY_C = HUB_DIR / "Core" / "Src" / "sensor_config_generated.c"
 
 
 def ch(i, pin, **kw):
@@ -99,28 +98,30 @@ def test_legacy_import_and_known_gear_position_issue():
     assert msgs == [m for m in msgs if "Gear_Position" in m] and msgs  # only the known AFE B problem
 
 
+# ADS124S08 registers (INPMUX, PGA, DATARATE, REF, IDACMAG, IDACMUX, VBIAS) parse_cfg_to_c.py produced for the legacy YAML, AFE A
+# channels first (8, active), then AFE B (4 resistive, 5 thermocouples); the digital inputs carry no registers
+GOLDEN_REGS = [(156, 0, 29, 0, 15, 255, 0), (124, 0, 29, 0, 15, 255, 0), (92, 0, 29, 0, 15, 255, 0), (60, 0, 29, 0, 15, 255, 0),
+               (28, 0, 29, 0, 15, 255, 0), (140, 0, 29, 0, 15, 255, 0), (108, 0, 29, 0, 15, 255, 0), (12, 0, 29, 0, 15, 255, 0),
+               (124, 8, 23, 1, 7, 247, 0), (140, 8, 23, 1, 7, 248, 0), (108, 8, 23, 1, 7, 246, 0), (156, 8, 23, 1, 7, 249, 0),
+               (83, 15, 23, 9, 15, 255, 32), (3, 15, 23, 9, 15, 255, 1), (67, 15, 23, 9, 15, 255, 16), (19, 15, 23, 9, 15, 255, 2),
+               (35, 15, 23, 9, 15, 255, 4)]
+
+
 def test_legacy_golden_register_values():
     """AFE register values must match what parse_cfg_to_c.py produced for the same YAML."""
+    rows = hub_sensor_rows(import_yaml(LEGACY_YAML), 0)
+    analog = [r for r in rows if r[1] in (1, 2)]
+    assert [tuple(r[8:15]) for r in analog] == GOLDEN_REGS
+    assert [sum(1 for r in rows if r[1] == g) for g in (1, 2, 3)] == [8, 9, 2]
+
+
+def test_hub_blob_standard_ids_and_digital_slots():
     p = import_yaml(LEGACY_YAML)
-    new = generate_hub(p, 0)
-    old = LEGACY_C.read_text()
-
-    def regs(c):
-        return re.findall(r"\.(inpmux|pga|datarate|ref|idacmag|idacmux|vbias)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", c)
-
-    norm = lambda l: [(k, int(v, 0)) for k, v in l]
-    assert norm(regs(new)) == norm(regs(old))
-    for name in ("A", "B", "DIG"):
-        cnt = lambda c: re.search(rf"{name}_ACTIVE_SENSORS_COUNT = (\d+)", c).group(1)
-        assert cnt(new) == cnt(old)
-
-
-def test_generated_c_standard_ids_and_digital_slots():
-    new = generate_hub(import_yaml(LEGACY_YAML), 0)
-    assert "0x00200000UL" in new  # hub 0, 200 Hz, idx 0
-    dig = new.split("DIG_ACTIVE_SENSORS_CONFIG")[1]
-    slots = [int(x) for x in re.findall(r"live_sensor_mapping = (\d+)", dig)]
-    assert slots and all(s >= 20 for s in slots)  # digital slots no longer collide with analog slots
+    rows = hub_sensor_rows(p, 0)
+    assert rows[0][0] == 0x00200000  # hub 0, 200 Hz, idx 0
+    assert all(r[7] >= 20 for r in rows if r[1] == 3)  # digital slots do not collide with analog slots
+    parsed = hubblob.parse(hubblob.build(p, 0))
+    assert parsed["hub_id"] == 0 and len(parsed["sensors"]) == len(rows) and parsed["config_hash"] == int(p.config_hash(), 16)
 
 
 def test_dash_json_roundtrip():
@@ -142,3 +143,13 @@ def test_connector_pins():
     assert "not a signal input" in msgs and "5V pin 18" in msgs and "GND pin 5" in msgs
     assert hwmap.resolve_pin(27) == hwmap.resolve_pin(20)
     assert "signal (-)" not in msgs and "pin 3 " not in msgs
+
+
+def test_analog_base_units_volts_and_ohms():
+    """Active / thermocouple inputs are volts, resistive inputs ohms (R = V / 1 mA IDAC); the code scale follows the reference."""
+    from canharness import hwmap
+    assert hwmap.excitation_current_a("resistive") == pytest.approx(1e-3) and hwmap.excitation_current_a("active") == 0
+    assert [hwmap.base_unit(t) for t in ("resistive", "active", "thermocouple")] == ["ohm", "V", "V"]
+    assert hwmap.counts_to_base("active", 5.0) == pytest.approx(5.0 / 2**23)
+    assert hwmap.counts_to_base("resistive", 5.0) == pytest.approx(5.0 / 2**23 / 1e-3)        # 1 kohm per volt
+    assert hwmap.counts_to_base("thermocouple", 5.0) == pytest.approx(2.5 / 128 / 2**23)     # internal reference, gain 128

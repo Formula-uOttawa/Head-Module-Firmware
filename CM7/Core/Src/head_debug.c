@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "head_link.h"
+#include "head_shared.h"
 #include "head_store.h"
 #include "head_text.h"
 #include "main.h"
@@ -16,8 +17,58 @@
  *                    (the driver builds the SPI address byte reg << 1 | 1); only registers in TCANConsoleWriteAllowed() are accepted.
  *   tcan:wd          read-only: watchdog registers, init status and the SPI status byte
  *   flash            read-only: last flash status of the config store
+ *   can:status       read-only: one line per FDCAN: error counters, bus-off / passive, error codes seen, bit timing registers
  *   reset
  */
+
+static void reply_err(char *resp, size_t cap, const char *cmd, const char *what, uint32_t ts);
+
+/* "stuff,form,ack,bit1,bit0,crc" for the error codes seen (bit n of mask = code n), "-" if none */
+static void lec_names(uint32_t mask, char *out, size_t cap)
+{
+    static const char *const n[7] = { "", "stuff", "form", "ack", "bit1", "bit0", "crc" };
+    size_t w = 0;
+    out[0] = '\0';
+    for (unsigned c = 1; c <= 6; c++)
+        if ((mask >> c) & 1u)
+            w += (size_t)snprintf(out + w, cap - w, "%s%s", w ? "," : "", n[c]);
+    if (w == 0)
+        snprintf(out, cap, "-");
+}
+
+static void can_status(uint32_t ts)
+{
+    char resp[224], lec[32], dlec[32];
+    if (HEAD_SHARED->magic != HEAD_SHARED_MAGIC) {
+        reply_err(resp, sizeof resp, "can", "ERR_CM4_NOT_READY", ts);
+        HeadLink_SendText(resp);
+        return;
+    }
+    /* FDCAN1 pins: PD0 = RX (idles high), PD1 = TX (must be alternate function 9). Only read if some core clocks GPIOD. */
+    if ((RCC->AHB4ENR | RCC_C1->AHB4ENR | RCC_C2->AHB4ENR) & RCC_AHB4ENR_GPIODEN) {
+        const unsigned tx_af = (GPIOD->AFR[0] >> 4) & 0xFu, tx_mode = (GPIOD->MODER >> 2) & 3u;
+        unsigned rx_low = 0, tx_low = 0; /* 2000 quick samples (~0.1 ms): an idle bus reads high; a bus held dominant reads low every time */
+        for (unsigned i = 0; i < 2000u; i++) {
+            const uint32_t idr = GPIOD->IDR;
+            rx_low += (idr & 1u) == 0u;
+            tx_low += (idr & 2u) == 0u;
+        }
+        snprintf(resp, sizeof resp, "can:fdcan1:pins:rx(PD0) low %u/2000:tx(PD1) low %u/2000:tx=%s af=%u\r\n", rx_low, tx_low,
+                 tx_mode == 2u ? "alternate" : tx_mode == 1u ? "OUTPUT(not alternate!)" : tx_mode == 0u ? "INPUT(not alternate!)" : "analog", tx_af);
+        HeadLink_SendText(resp);
+    }
+    for (unsigned p = 0; p < 2; p++) {
+        const HeadCanDiag_t *d = &HEAD_SHARED->can_diag[p];
+        lec_names(d->lec_seen, lec, sizeof lec);
+        lec_names(d->dlec_seen, dlec, sizeof dlec);
+        snprintf(resp, sizeof resp,
+                 "can:fdcan%u:run=%u:tec=%lu:rec=%lu:busoff=%u:passive=%u:warn=%u:act=%u:lec=%s:dlec=%s:nbtp=%08lX:dbtp=%08lX:tdcr=%08lX:tdcv=%lu:cccr=%08lX\r\n",
+                 p + 1u, (unsigned)d->running, (unsigned long)d->tec, (unsigned long)d->rec, (unsigned)d->bus_off, (unsigned)d->passive,
+                 (unsigned)d->warning, (unsigned)d->activity, lec, dlec, (unsigned long)d->nbtp, (unsigned long)d->dbtp, (unsigned long)d->tdcr,
+                 (unsigned long)d->tdcv, (unsigned long)d->cccr);
+        HeadLink_SendText(resp);
+    }
+}
 
 static void reply_err(char *resp, size_t cap, const char *cmd, const char *what, uint32_t ts)
 {
@@ -62,16 +113,23 @@ void HeadDebug_HandleLine(const char *line)
     } else if (strcmp(cmd, "tcan") == 0) {
         char *sub = strtok_r(NULL, ":", &save);
         if (sub && strcmp(sub, "wd") == 0) {
-            uint8_t w1 = 0, w2 = 0;
-            bool ok = TCANSpiRead(TCAN_REG_WD_CONFIG_1, &w1) && TCANSpiRead(TCAN_REG_WD_CONFIG_2, &w2);
-            if (ok)
-                snprintf(resp, sizeof resp, "tcan:wd:OK:%lu:wd1=%02X:wd2=%02X:init=%02X:st=%02X\r\n", (unsigned long)ts, (unsigned)w1,
-                         (unsigned)w2, (unsigned)tcan_init_status, (unsigned)tcan_global_int);
+            uint8_t w1 = 0, w2 = 0, cc1 = 0;
+            bool ok = TCANSpiRead(TCAN_REG_WD_CONFIG_1, &w1) && TCANSpiRead(TCAN_REG_WD_CONFIG_2, &w2) && TCANSpiRead(TCAN_REG_CAN_CNTRL_1, &cc1);
+            if (ok) /* cc1 low 3 bits must be 6 (CAN transmitter on in SBC normal mode), anything else means the CAN transceiver is not driving */
+                snprintf(resp, sizeof resp, "tcan:wd:OK:%lu:wd1=%02X:wd2=%02X:cc1=%02X:init=%02X:st=%02X\r\n", (unsigned long)ts, (unsigned)w1,
+                         (unsigned)w2, (unsigned)cc1, (unsigned)tcan_init_status, (unsigned)tcan_global_int);
             else
                 reply_err(resp, sizeof resp, "tcan:wd", "ERR_SPI", ts);
         } else {
             reply_err(resp, sizeof resp, "tcan", "ERR_BAD_ARGS", ts);
         }
+    } else if (strcmp(cmd, "can") == 0) {
+        char *sub = strtok_r(NULL, ":", &save);
+        if (sub && strcmp(sub, "status") == 0) {
+            can_status(ts);
+            return;
+        }
+        reply_err(resp, sizeof resp, "can", "ERR_BAD_ARGS", ts);
     } else if (strcmp(cmd, "flash") == 0) {
         snprintf(resp, sizeof resp, "flash:OK:%lu:hal=%u:err=%08lX\r\n", (unsigned long)ts, (unsigned)HeadStore_LastHalStatus(),
                  (unsigned long)HeadStore_LastFlashError());

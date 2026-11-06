@@ -24,6 +24,8 @@
 | `CM4/Core/Src/head_cm4.c` | runtime CAN setup, RX interrupt, mailbox, sniffer | CM4 |
 | `CM7/Core/Src/head_link.c`, `head_store.c`, `head_debug.c` | UART link, flash storage, legacy ASCII commands | CM7 |
 
+| `Common/Src/hcanlink.c`, `head_relay.c` | message layer over the hub CAN bus (fragments, CRC); the head's one-at-a-time relay to a hub | CM4 (shared with the hub) |
+
 Hooks in generated files are limited to USER CODE sections (`main.c` of each core, `fdcan.c`).
 
 ## Configuration flow
@@ -34,6 +36,13 @@ Hooks in generated files are limited to USER CODE sections (`main.c` of each cor
 4. The CM4 parses into the inactive `HeadConfig_t`, stops the buses, swaps the config pointer, re-initialises each FDCAN
    (bit timing from the kernel clock, filters from the blob, message RAM unchanged) and starts it. If anything fails, the
    previous config is restored and the error code returned.
+
+### Hub configuration through the head
+`HUB_RELAY` (UART) -> CM7 `op_hub_relay` writes the request into `relay_buf` and issues the mailbox command `HEAD_CMD_HUB_RELAY` -> the CM4
+(`relay_begin`) hands it to `head_relay.c`, which sends it as CONFIG fragments on the hub bus (`tx_send`, FD + BRS) and
+waits for the hub's ACK fragments (the CM4 adds one hardware filter for ACK frames on the hub bus and routes them in `drain_rx`, they
+never reach the sensor decoder). The mailbox request is acknowledged when the reply is complete or the timeout passed; sending, receiving
+and the sensor decoding all keep running meanwhile. The hub side is documented in `protocol.md` section 4.
 
 Nothing about bus setup depends on CubeMX values other than pins, the FDCAN kernel clock and NVIC.
 

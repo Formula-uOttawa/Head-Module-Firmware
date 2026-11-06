@@ -123,7 +123,7 @@ static uint8_t sniff_set(void *c, uint8_t bus, uint8_t en)
 
 static void sim_reboot(void *c) { (void)c; }
 
-static const HprotoOps_t ops = { get_info, cfg_commit, cfg_read, cfg_clear, live_get, stats_get, sniff_set, sim_reboot };
+static const HprotoOps_t ops = { get_info, cfg_commit, cfg_read, cfg_clear, live_get, stats_get, sniff_set, NULL, sim_reboot };
 
 static void on_msg(void *c, const uint8_t *msg, size_t len)
 {

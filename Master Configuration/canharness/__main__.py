@@ -26,6 +26,7 @@ def main(argv=None) -> int:
     p.add_argument("project", type=Path)
     p.add_argument("--out", type=Path, default=Path("out"))
     p.add_argument("--deploy", action="store_true", help="also copy the head default config into ../Common/Src")
+    p.add_argument("--deploy-hub", type=int, metavar="HUB_ID", help="also copy that hub's default config (hub_default_blob.c) into ../../SensorHubV1/Core/Src")
     a = ap.parse_args(argv)
 
     if a.cmd == "import-legacy":
@@ -41,7 +42,8 @@ def main(argv=None) -> int:
         for h in project.hubs:
             d = a.out / f"hub_{h.hub_id}"
             d.mkdir(parents=True, exist_ok=True)
-            (d / "sensor_config_generated.c").write_text(generate_hub(project, h.hub_id), encoding="utf-8")
+            for name, data in generate_hub(project, h.hub_id).items():
+                (d / name).write_bytes(data if isinstance(data, bytes) else data.encode())
         d = a.out / "head"
         d.mkdir(parents=True, exist_ok=True)
         for name, data in generate_head(project).items():
@@ -49,6 +51,14 @@ def main(argv=None) -> int:
         if a.deploy:
             dst = Path(__file__).resolve().parents[2] / "Common" / "Src" / "head_default_blob.c"
             dst.write_text((a.out / "head" / "head_default_blob.c").read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"deployed {dst}")
+        if a.deploy_hub is not None:
+            src = a.out / f"hub_{a.deploy_hub}" / "hub_default_blob.c"
+            if not src.exists():
+                print(f"no hub {a.deploy_hub} in the project")
+                return 1
+            dst = Path(__file__).resolve().parents[2].parent / "SensorHubV1" / "Core" / "Src" / "hub_default_blob.c"
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"deployed {dst}")
         d = a.out / "dash"
         d.mkdir(parents=True, exist_ok=True)

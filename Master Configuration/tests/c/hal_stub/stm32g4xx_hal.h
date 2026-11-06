@@ -26,6 +26,8 @@ void HAL_Delay(uint32_t ms);
 static inline uint32_t __get_PRIMASK(void) { return 0; }
 static inline void __set_PRIMASK(uint32_t v) { (void)v; }
 static inline void __disable_irq(void) {}
+static inline void __DMB(void) {}
+void HAL_NVIC_SystemReset(void);
 
 /* SPI */
 typedef struct { int id; } SPI_TypeDef;
@@ -68,7 +70,24 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *h);
 typedef struct {
     uint32_t Identifier, IdType, TxFrameType, DataLength, ErrorStateIndicator, BitRateSwitch, FDFormat, TxEventFifoControl, MessageMarker;
 } FDCAN_TxHeaderTypeDef;
-typedef struct { int id; } FDCAN_HandleTypeDef;
+typedef struct { int id; struct { uint32_t ExtFiltersNbr; } Init; } FDCAN_HandleTypeDef;
+#define FDCAN_STANDARD_ID 0u
+#define FDCAN_RX_FIFO0 0u
+#define FDCAN_REJECT 0u
+#define FDCAN_REJECT_REMOTE 0u
+#define FDCAN_FILTER_MASK 2u
+#define FDCAN_FILTER_TO_RXFIFO0 1u
+#define FDCAN_IT_RX_FIFO0_NEW_MESSAGE 1u
+#define FDCAN_IT_RX_FIFO0_MESSAGE_LOST 2u
+typedef struct { uint32_t Identifier, IdType, RxFrameType, DataLength, ErrorStateIndicator, BitRateSwitch, FDFormat, RxTimestamp, FilterIndex, IsFilterMatchingFrame; } FDCAN_RxHeaderTypeDef;
+typedef struct { uint32_t IdType, FilterIndex, FilterType, FilterConfig, FilterID1, FilterID2; } FDCAN_FilterTypeDef;
+HAL_StatusTypeDef HAL_FDCAN_Init(FDCAN_HandleTypeDef *h);
+HAL_StatusTypeDef HAL_FDCAN_ConfigFilter(FDCAN_HandleTypeDef *h, FDCAN_FilterTypeDef *f);
+HAL_StatusTypeDef HAL_FDCAN_ConfigGlobalFilter(FDCAN_HandleTypeDef *h, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+HAL_StatusTypeDef HAL_FDCAN_ActivateNotification(FDCAN_HandleTypeDef *h, uint32_t its, uint32_t buffers);
+uint32_t HAL_FDCAN_GetRxFifoFillLevel(FDCAN_HandleTypeDef *h, uint32_t fifo);
+HAL_StatusTypeDef HAL_FDCAN_GetRxMessage(FDCAN_HandleTypeDef *h, uint32_t fifo, FDCAN_RxHeaderTypeDef *hdr, uint8_t *data);
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *h, uint32_t its);
 uint32_t HAL_FDCAN_GetTxFifoFreeLevel(FDCAN_HandleTypeDef *h);
 HAL_StatusTypeDef HAL_FDCAN_AddMessageToTxFifoQ(FDCAN_HandleTypeDef *h, FDCAN_TxHeaderTypeDef *hdr, uint8_t *data);
 

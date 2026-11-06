@@ -1,4 +1,5 @@
-"""One shared connection to a head module for the web app (serialised; the UI polls)."""
+"""One shared connection to a head or hub module for the web app (serialised; the UI polls). Connected to a head, a hub on the
+CAN bus can be selected as the target: its requests are then relayed through the head (HUB_RELAY)."""
 
 from __future__ import annotations
 
@@ -8,8 +9,8 @@ from collections import deque
 from typing import Callable, Optional
 
 from .. import blob as blobmod
-from .client import DeviceClient, SerialTransport, Transport
-from .messages import DeviceError, WrongDevice
+from .client import DeviceClient, HubViaHead, SerialTransport, Transport
+from .messages import DeviceError, HubTimeout, WrongDevice
 
 
 def list_ports() -> list[dict]:
@@ -35,6 +36,7 @@ class DeviceSession:
         self.text: deque = deque(maxlen=500)  # unsolicited / ASCII lines from the device
         self.text_seq = 0
         self._cfg_cache: dict[str, dict] = {}
+        self.target: Optional[int] = None  # hub id reached through the connected head; None = the connected board itself
 
     # -- connection -------------------------------------------------------------------------------------------
     def connect(self, port: str, baud: int = 115200) -> dict:
@@ -56,7 +58,7 @@ class DeviceSession:
             if self.client:
                 try: self.client.t.close()
                 except Exception: pass
-            self.client, self.port = None, None
+            self.client, self.port, self.target = None, None, None
             self._cfg_cache.clear()
 
     def _on_text(self, line: str) -> None:
@@ -70,13 +72,60 @@ class DeviceSession:
 
     @property
     def device_type(self) -> Optional[str]:
-        return self.client.device_type if self.client else None
+        """What the requests currently talk to: the selected hub (through the head) or the connected board."""
+        if not self.client:
+            return None
+        return "hub" if self.target is not None else self.client.device_type
+
+    @property
+    def hub_id(self) -> Optional[int]:
+        """Hub id the next config upload is meant for: the selected hub, or the id a directly connected hub reports."""
+        if self.target is not None:
+            return self.target
+        if self.client and self.client.device_type == "hub":
+            return self.info().get("hub_id")
+        return None
 
     def _head(self, what: str) -> DeviceClient:
+        """The connected head itself (not a hub behind it) for head-only features."""
         c = self._c()
-        if c.device_type != "head":
-            raise WrongDevice(what, c.device_type)
+        if self.target is not None or c.device_type != "head":
+            raise WrongDevice(what, self.device_type)
         return c
+
+    def _ops(self) -> DeviceClient:
+        """Client for config / info / live requests: the tunnel to the selected hub, or the connected board."""
+        c = self._c()
+        return HubViaHead(c, self.target) if self.target is not None else c
+
+    # -- hubs behind the head ---------------------------------------------------------------------------------
+    def scan_hubs(self, ids: list[int]) -> list[dict]:
+        """Ask each hub id (through the head) for its IDENT: [{hub_id, found, fw_version, uid, error}]."""
+        with self.lock:
+            head = self._head("hub scan")
+            out = []
+            for i in ids:
+                try:
+                    r = head.relay(i, 0x07, b"", timeout=0.3)
+                    from . import messages as m
+                    ident = m.parse_ident(r)
+                    out.append({"hub_id": i, "found": True, "device_type": ident["device_type"], "fw_version": ident["fw_version"], "uid": ident["uid"],
+                                "reported_id": ident["hub_id"]})
+                except HubTimeout:
+                    out.append({"hub_id": i, "found": False})
+            return out
+
+    def select_hub(self, hub_id: Optional[int]) -> Optional[dict]:
+        """Target a hub through the head (verified with INFO), or None to talk to the connected board again."""
+        with self.lock:
+            self._cfg_cache.clear()
+            if hub_id is None:
+                self.target = None
+                return None
+            c = self._head("hub selection")
+            info = HubViaHead(c, hub_id).info()  # raises HubTimeout if nothing answers; the target is only set on success
+            self.target = hub_id
+            return info
 
     def _c(self) -> DeviceClient:
         if self.client is None:
@@ -86,18 +135,18 @@ class DeviceSession:
     # -- operations -------------------------------------------------------------------------------------------
     def info(self) -> dict:
         with self.lock:
-            return self._c().info()
+            return self._ops().info()
 
     def status(self, since_text: int = 0) -> dict:
         """Cheap periodic health check: INFO (proves the device answers), bus stats, and any new text lines."""
         with self.lock:
-            c = self._c()
+            c = self._ops()
             info = c.info()
             try:
                 stats = c.stats() if c.device_type == "head" else None
             except Exception:  # e.g. CM4 not running yet; INFO alone proves the link, so never fail the poll over stats
                 stats = None
-            return {"port": self.port, "info": info, "stats": stats, "text_last": self.text_seq,
+            return {"port": self.port, "target_hub": self.target, "info": info, "stats": stats, "text_last": self.text_seq,
                     "text": [t for t in self.text if t["seq"] > since_text]}
 
     def ascii(self, line: str) -> dict:
@@ -105,6 +154,13 @@ class DeviceSession:
         with self.lock:
             c = self._c()
             before = self.text_seq
+            if self.target is not None:  # a hub behind the head: the console runs on the hub (HUB_ASCII over the CAN relay)
+                from . import messages as m
+                text = HubViaHead(c, self.target).request(m.HUB_ASCII, line.strip().encode("ascii", "replace")[:120], timeout=2.0)
+                for l in text.decode("ascii", "replace").replace("\r", "").split("\n"):
+                    if l.strip():
+                        self._on_text(l)
+                return {"lines": [t for t in self.text if t["seq"] > before], "last": self.text_seq}
             c.t.write(line.strip().encode("ascii", "replace") + b"\n")
             quiet = 0
             for _ in range(10):
@@ -118,21 +174,22 @@ class DeviceSession:
     def upload(self, blob: bytes, apply: bool, store: bool) -> dict:
         with self.lock:
             self._cfg_cache.clear()
-            return self._head("config upload").upload_config(blob, apply=apply, store=store)
+            return self._ops().upload_config(blob, apply=apply, store=store)
 
     def download(self, source: str = "active") -> bytes:
         with self.lock:
-            return self._head("config read").read_config(source)
+            return self._ops().read_config(source)
 
     def clear(self, revert: bool) -> None:
         with self.lock:
-            self._head("config clear").clear_config(revert)
+            self._ops().clear_config(revert)
             self._cfg_cache.clear()
 
     def reboot(self) -> None:
         with self.lock:
-            self._c().reboot()
-            self.disconnect()
+            self._ops().reboot()
+            if self.target is None:  # a relayed hub reboot leaves the head connected
+                self.disconnect()
 
     def stats(self) -> dict:
         with self.lock:
@@ -147,7 +204,7 @@ class DeviceSession:
     def live(self) -> dict:
         """Current value of every channel of the active config: [{channel_id, value, stale}]."""
         with self.lock:
-            c = self._c()
+            c = self._ops()
             info = c.info()
             if c.device_type == "hub":  # raw value per connector-pin slot (slot = pin - 1); names come from the project
                 r = c.live(0, 24)

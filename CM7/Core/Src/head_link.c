@@ -439,7 +439,29 @@ static void op_reboot(void *ctx)
                   There is no mailbox "quiesce" command: a CM4 mid-apply or mid-transmit is cut by the system reset. */
 }
 
-static const HprotoOps_t s_ops = { op_info, op_cfg_commit, op_cfg_read, op_cfg_clear, op_live_get, op_stats_get, op_sniff_set, op_reboot };
+/* Forward a hub protocol message over the hub bus (the CM4 owns the CAN peripheral). The CM4 answers within HRELAY_TIMEOUT_MS
+   (1 s), which is shorter than HEAD_CM4_CMD_TIMEOUT_MS, so a missing hub is reported as HERR_TIMEOUT by the CM4 itself. */
+static uint8_t op_hub_relay(void *ctx, uint8_t hub, uint16_t timeout_ms, const uint8_t *req, uint16_t req_len, uint8_t *rsp, uint16_t cap,
+                            uint16_t *rsp_len)
+{
+    (void)ctx;
+    if (!shared_ready() || !mailbox_idle())
+        return HERR_BUSY;
+    if (hub > 7u || req_len < 2u || req_len > HEAD_RELAY_BUF)
+        return HERR_RANGE;
+    memcpy(SH->relay_buf, req, req_len);
+    const uint8_t rc = cm4_command(HEAD_CMD_HUB_RELAY, hub, req_len, timeout_ms); /* cmd_crc carries the timeout */
+    if (rc != HERR_NONE)
+        return rc;
+    const uint32_t n = SH->relay_len;
+    if (n < 2u || n > HEAD_RELAY_BUF || n > cap)
+        return HERR_RANGE;
+    memcpy(rsp, SH->relay_buf, n);
+    *rsp_len = (uint16_t)n;
+    return HERR_NONE;
+}
+
+static const HprotoOps_t s_ops = { op_info, op_cfg_commit, op_cfg_read, op_cfg_clear, op_live_get, op_stats_get, op_sniff_set, op_hub_relay, op_reboot };
 
 /* ---- framing callbacks --------------------------------------------------------------------------------------- */
 

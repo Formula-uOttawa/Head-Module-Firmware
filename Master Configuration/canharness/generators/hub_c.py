@@ -1,78 +1,61 @@
-"""Generate SensorHubV1 sensor_config_generated.c (same extern contract as sensor_state.h)."""
+"""Hub module configuration artefacts: the binary hub blob (uploaded over the head's CAN relay or the hub's UART) and a C file
+that embeds it as the hub's compiled-in default (SensorHubV1/Core/Src/hub_default_blob.c). Blob format: docs/protocol.md 2.1."""
 
 from __future__ import annotations
 
 from .. import hwmap
 from ..model import Project
-from ..packing import PackedFrame, pack
+from ..packing import pack
 
 MAX_SENSORS = 24
+SENSOR_TYPE = {"resistive": 0, "active": 1, "thermocouple": 2, "digital": 3}  # SENSOR_TYPE_* in sensor_state.h
+RATE = {10: 0, 100: 1, 200: 2}  # RATE_* in sensor_state.h
+GROUP = {1: 1, 2: 2, 3: 3}  # hwmap afe number -> blob group (1 AFE A, 2 AFE B, 3 digital)
 
 
-def _afe_entry(ch, afe: int, afe_pin: int) -> str:
-    st = ch.sensor_type.value
-    neg = hwmap.AINCOM if ch.pin_sig_neg is None else hwmap.resolve_pin(ch.pin_sig_neg)[1]
-    f = [
-        ("inpmux", hwmap.inpmux(st, afe_pin, neg)),
-        ("pga", hwmap.pga(st)),
-        ("datarate", hwmap.datarate(afe, st)),
-        ("ref", hwmap.ref_ctrl(st)),
-        ("idacmag", hwmap.idacmag(st)),
-        ("idacmux", hwmap.idacmux(st, afe_pin)),
-        ("vbias", hwmap.vbias(st, afe_pin)),
-    ]
-    body = ",\n".join(f"        .{k:<8} = 0x{v:02X}" for k, v in f)
-    return f"    // {ch.name}\n    {{\n{body}\n    }},"
-
-
-def generate_hub(project: Project, hub_id: int) -> str:
+def hub_sensor_rows(project: Project, hub_id: int) -> list[tuple]:
+    """One row per enabled channel of the hub, AFE A first, then AFE B, then digital (each group in project order):
+    (frame_id, group, channel, sensor_type, rate, byte_offset, byte_length, slot, inpmux, pga, datarate, ref, idacmag, idacmux, vbias)."""
     frames, _ = pack(project)
     where = {}  # channel_id -> (frame, placement)
     for fr in frames:
         for p in fr.placements:
             where[p.channel.channel_id] = (fr, p)
 
-    groups = {1: [], 2: [], 3: []}
+    groups: dict[int, list] = {1: [], 2: [], 3: []}
     for ch in project.channels:
         if ch.enabled and ch.source == "hub" and ch.hub == hub_id and ch.channel_id in where:
             afe, afe_pin = hwmap.resolve_pin(ch.pin_sig_pos)
             groups[afe].append((ch, afe, afe_pin))
 
-    out = [
-        "#include <stdint.h>",
-        '#include "sensor_state.h"',
-        "",
-        "/*",
-        "--------------------------------",
-        "AUTO GENERATED SENSOR CONFIGURATION FILE (CAN-harness Master Configuration)",
-        f"hub {hub_id}  config hash {project.config_hash()}",
-        "DO NOT EDIT - regenerate from the project file",
-        "--------------------------------",
-        "*/",
-        f"const uint8_t HUB_ID = {hub_id};",
-        f"volatile uint32_t LIVE_SENSOR_DATA[MAX_SENSORS];  // one slot per connector pin (pin - 1)",
-        "",
-    ]
-    for afe, prefix in ((1, "A"), (2, "B"), (3, "DIG")):
-        items = groups[afe]
-        out.append(f"const SensorConfig_t {prefix}_ACTIVE_SENSORS_CONFIG[] = {{")
-        for ch, _, afe_pin in items:
+    rows = []
+    for afe in (1, 2, 3):
+        for ch, _, afe_pin in groups[afe]:
             fr, p = where[ch.channel_id]
-            out += [
-                f"    // {ch.name}", "    {",
-                f"        .frame_id    = 0x{fr.id_base:08X}UL,",
-                f"        .afe         = {afe},",
-                f"        .afe_channel = {afe_pin},",
-                f"        .sensor_type = SENSOR_TYPE_{ch.sensor_type.name},",
-                f"        .sample_rate = RATE_{ch.sample_rate_hz}HZ,",
-                f"        .byte_offset = {p.offset},",
-                f"        .byte_length = {p.length},",
-                f"        .live_sensor_mapping = {ch.pin_sig_pos - 1}",
-                "    },",
-            ]
-        out += ["};", f"const uint8_t {prefix}_ACTIVE_SENSORS_COUNT = {len(items)};", ""]
-        if afe != 3:
-            out.append(f"const SensorAfeConfig_t {prefix}_ACTIVE_SENSORS_AFE_CONFIG[] = {{")
-            out += [_afe_entry(ch, a, pin) for ch, a, pin in items]
-            out += ["};", ""]
-    return "\n".join(out)
+            st = ch.sensor_type.value
+            if afe == 3:
+                regs = (0, 0, 0, 0, 0, 0, 0)
+            else:
+                neg = hwmap.AINCOM if ch.pin_sig_neg is None else hwmap.resolve_pin(ch.pin_sig_neg)[1]
+                regs = (hwmap.inpmux(st, afe_pin, neg), hwmap.pga(st), hwmap.datarate(afe, st), hwmap.ref_ctrl(st),
+                        hwmap.idacmag(st), hwmap.idacmux(st, afe_pin), hwmap.vbias(st, afe_pin))
+            rows.append((fr.id_base, GROUP[afe], afe_pin, SENSOR_TYPE[st], RATE[ch.sample_rate_hz], p.offset, p.length,
+                         ch.pin_sig_pos - 1, *regs))
+    return rows
+
+
+def generate_hub(project: Project, hub_id: int) -> dict[str, bytes | str]:
+    """Hub artefacts: the binary blob and the C file embedding it as the compiled-in default."""
+    from .. import hubblob  # late import: hubblob uses hub_sensor_rows
+
+    data = hubblob.build(project, hub_id)
+    rows = [", ".join(f"0x{b:02X}" for b in data[i:i + 16]) for i in range(0, len(data), 16)]
+    c = [
+        "/*", " * AUTO GENERATED by CAN-harness Master Configuration - DO NOT EDIT",
+        f" * project '{project.name}'  hub {hub_id}  config hash {project.config_hash()}",
+        " * Compiled-in default hub configuration (hub blob format v1, used until a config is stored in flash).", " */",
+        "#include <stdint.h>", "",
+        "const uint8_t HUB_DEFAULT_BLOB[] __attribute__((aligned(4))) = {", *[f"    {r}," for r in rows], "};",
+        f"const uint32_t HUB_DEFAULT_BLOB_LEN = {len(data)};", "",
+    ]
+    return {f"hub_{hub_id}.blob": data, "hub_default_blob.c": "\n".join(c)}

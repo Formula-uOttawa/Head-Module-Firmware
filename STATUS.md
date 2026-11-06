@@ -1,6 +1,6 @@
 # CAN-harness head module: status & todo
 
-Last updated: 2026-11-05 (review fixes)
+Last updated: 2026-11-05 (hub config over CAN)
 
 Legend: ✅ done · 🔧 in progress / needs your input · 📋 planned · 💡 idea / maybe
 
@@ -9,11 +9,33 @@ Legend: ✅ done · 🔧 in progress / needs your input · 📋 planned · 💡 
 - 🔧 **Confirm the clocks on hardware.** You changed both FDCAN clocks to 80 MHz. The Device tab shows the head's real FDCAN clock and flags a mismatch with the project. For the hub, the shared PLL also changed SYSCLK, so check the hub's SYSCLK-derived timing (TIM2 200 Hz tick, AFE SPI prescaler, ADC clock).
 - 🔧 **Config upload/store on hardware:** upload, apply and store a config from the Device tab, power cycle, check it reloads from flash.
 
-- 🔧 **Test Motec transmit on hardware:** define a frame in the CAN transmit tab, upload, and check the sniffer/Motec receives it. Motec's byte order/scale settings: use the tab's Export CSV. Values are sent raw (hub channels = ADC counts) with your multiplier/offset.
+- 🔧 **Test Motec transmit on hardware:** define a frame in the CAN transmit tab, upload, and check the sniffer/Motec receives it. Motec's byte order/scale settings: use the tab's Export CSV. Analog hub channels are float32 volts (the head converts the ADC code with the project's ADC reference voltage, 5 V by default); values are sent as `(value - offset) / multiplier`.
 
 - ✅ **Config ownership decided (recommendation, say if you disagree):** the app/project is the single source of truth; head and hubs are both targets. Hub config goes to the hub directly over its UART (bench) or via the head over CAN; devices report their config hash so outdated ones are visible. No hub-to-head propagation. Details in `docs/protocol.md` section 4.
 - 🔧 **Hub AFE B does not answer on this board** (boot line `afe:B:stage=12`, status `0x35`; chip looks off-centre on its pad, check solder/CS_B PC8/DOUT/supplies). The hub keeps running on AFE A: the failed init stays a severe error (boot line, INFO `AFE fault` flag, red status on the Device tab, retried every 5 s, `afe:status:` line if it recovers) and B's channels are sent on CAN as the "no data" code -8388608 (also for any AFE channel that goes stale). The head/dash must treat -8388608 as invalid (dash JSON: `no_data_value`).
-- 🔧 **Hub PA2 (USART2 RX) pin looks dead**, so the hub can send but not receive over UART; hub config goes over CAN for now (UART fix: replace the MCU, or wire the ST-LINK TX to PB3 and receive there).
+- 🔧 **Hub PA2 (USART2 RX) pin looks dead**, so the hub can send but not receive over UART; its config now goes over CAN through the head (below). UART fix, if wanted: replace the MCU, or wire the ST-LINK TX to PB3 and receive there.
+- ✅ **Hub AFE B works after the resolder** (`afe status 0x3F`).
+
+**Hub console over CAN (2026-11-06):** with a hub selected on the head's Device tab, the console box runs commands on the hub through the CAN relay (`HUB_ASCII`), e.g. `ping`, `tcan:wd`, `afe:probe:a` (restarts that AFE and reads it without the DRDY interrupt: codes change + `drdy_low=0` means the DRDY wire/pin is at fault; the hub INFO also shows per-AFE samples / DRDY edges / resyncs). Needs a hub reflash only.
+
+**Volts in the head (2026-11-06; resistive inputs are ohms = volts / 1 mA IDAC, shown as `1234.5 Ω (1.2345 V)` in the live view, fixed decimals and fixed column widths):** analog hub channels are converted to float32 volts at the sensor pin in the head (`code / 2^23 * Vref / gain`; Vref = project setting `afe_vref_v`, default 5 V = REFP0 tied to the 5 V rail; thermocouples use the internal 2.5 V and gain 128). The hub's "no sample" code -8388608 is dropped (channel goes stale). Live values in the app, the dash JSON (`value_type f32`, `volts_per_count`) and Motec transmit follow; calibration x values are in volts. Needs a new head upload (blob route elements are 16 bytes now) and both head cores reflashed. If the 5 V reference is not exactly 5 V, set the measured value in Hubs & settings. Jumper test of the inputs: only on active-type channels, through 1-10 kohm, and only if AVDD is about 5 V (absolute maximum AVDD + 0.3 V).
+
+## Hub config over CAN (2026-11-05): implemented and host-tested, NOT yet run on hardware
+The hub now has the same configuration architecture as the head: the app builds a **hub blob** (`canharness/hubblob.py`, `protocol.md` 2.1), the hub parses it into RAM tables at boot
+from the newest valid slot of its own **flash log** (last 4 pages of bank 2, `0x0807E000`), or from a compiled-in default (`hub_default_blob.c`) if none. `sensor_config_generated.c`
+is gone. The app reaches a hub **through the head**: UART -> head (`HUB_RELAY`) -> CAN-FD hub bus -> hub (`hcanlink`, `protocol.md` 3.4). The same hub protocol also works on the hub's UART (bench, TX only on this board).
+161 host tests pass (real `hcanlink.c`, `head_relay.c`, `hproto.c` and the hub's `hub_canlink.c`, `hub_proto.c`, `hub_cfg.c`, `hub_slots.c`, `hub_store.c` run together over a simulated bus with a RAM flash model, including lost/duplicated fragments, power loss during a store, log wrap-around); all three firmware builds link without warnings.
+
+**Do these (in order):**
+1. CubeIDE: refresh both projects (new files: head `Common/{Inc,Src}/{hcanlink,head_relay}`; hub `Core/{Inc,Src}/{hcanlink,hub_canlink,hub_cfg,hub_flash,hub_slots,hub_store}`, `hub_default_blob.c`; `sensor_config_generated.c` was removed). Flash **both head cores and the hub**, power-cycle the head.
+2. For every hub board: `python -m canharness generate system.json --deploy-hub <its id>` and flash that build, so a fresh board answers with its own id (two boards with the same compiled-in id would both answer a request). The deployed file is `SensorHubV1/Core/Src/hub_default_blob.c` (hub 0 is deployed now).
+3. Web app (restart the server): connect to the **head**, Device tab, "Scan for hubs", Open the hub, then "Upload & restart hub". The hub screen then shows the active/stored config hashes ("matches project") and the CAN config link counters.
+4. Hardware assumptions I could not check: the hub's FDCAN message RAM is re-initialised in user code with one extended filter element (`HubCanLink_Init`; the `.ioc` still says 0 extended filters, setting it to 1 in CubeMX would make this consistent); the hub's flash must be in dual bank mode (default option byte `DBANK=1`, otherwise `HubStore_Write` returns "flash error"); flash stalls, ECC behaviour and the head's relay/ACK filter are untested; the hub and head must agree on the 5 Mbit/s bit timing as for the sensor frames.
+5. Linker: the log sits in the last 4 pages of bank 2 without a linker reservation (the image is ~72 KB, far below). A runtime check refuses writes if the image ever reaches that area. If you want it enforced at link time, reduce the hub's `FLASH` length by 8 KB in `STM32G474RETX_FLASH.ld` (needs your permission).
+
+Known limits: a torn flash page can still raise a double-ECC fault when read at boot (same risk as the head, see below); a hub that is renamed by a blob answers only to its new id; one relay in flight at a time (1 s timeout); the hub applies a new config only after a reset (no live apply, by design); the app builds the hub blob from the project's hub id, so a hub flashed with a wrong default id has to be reflashed or renamed by uploading a blob for the new id to the old id.
+
+**Debugging a CAN bus-off (head):** the ASCII command `can:status` prints one line per FDCAN: TEC/REC, bus-off/passive, the error types seen since the config was applied (`lec` arbitration phase, `dlec` data phase: stuff, form, ack, bit1, bit0, crc), the raw bit timing registers and the measured delay (`tdcv`). Reading: only `ack` = nobody acknowledges (wiring/other node); `bit0`/`bit1` = the controller does not read back what it drives (transceiver off, RX line, or the data-phase delay compensation); `form`/`crc`/`stuff` = bit rate mismatch or noise. Needs both head cores reflashed.
 
 ## Code review fixes (2026-11-05): implemented, NOT yet run on hardware
 Everything from the review (`reviews/*.md`; `STATUS` list before this change) was fixed except **HC-1 CAN bus-off recovery** (declined: new feature). 128 host tests pass; all three firmware builds link with no warnings in project/user files. None of it has been exercised on the boards: **please flash head and hub and go through the checklist below.**
@@ -22,7 +44,7 @@ Everything from the review (`reviews/*.md`; `STATUS` list before this change) wa
 
 **Do these (in order):**
 1. In CubeIDE: refresh/clean both projects (new files: head `CM7/Core/Inc/{head_config,head_text}.h`, `Common/{Inc,Src}/head_{slots,rxq}`, `head_util.h`; hub `Core/Inc/{hub_config,live_slots}.h`, `Core/Src/live_slots.c`). The out-of-tree scripts glob them already.
-2. Hub: copy `Master Configuration/out/hub_<id>/sensor_config_generated.c` into `SensorHubV1/Core/Src/` (AFE channels are now 3 signed bytes; the old file still has 2-byte unsigned fields, so CAN would carry only bits 15:0 and the head would decode it differently). Head: `Common/Src/head_default_blob.c` was regenerated; restart the web server (`python -m canharness.web`) for the new app code.
+2. Hub: deploy the hub default with `generate system.json --deploy-hub <id>` (see the hub config section above; it replaces the old `sensor_config_generated.c` step). Head: `Common/Src/head_default_blob.c` was regenerated; restart the web server (`python -m canharness.web`) for the new app code.
 3. Flash both boards (bench supply first time if the SBC needs it). Check: head boot line `boot:tcan:OK:tries=1:init=..`; hub `tcan:init:OK`; Device tab shows the hub's new Acquisition / System basis chip rows.
 4. Hub hardware assumptions I could not verify (check on the bench): both ADS124S08 START pins held low (hub uses the START command, no START pin symbol in `main.h`), DRDY idles high, the SBC supplies the AFEs before `AfeInit` runs, DIN/FAULT polarities. TX delay compensation offset for 5 Mbit/s (150 ns) is a calculation, not measured. `.ioc` has no SPI2 interrupt, so SPI overrun errors rely on the 5 ms stuck-transfer watchdog.
 5. Head: check the new flash store (upload + store several times, power cycle, `flash` ASCII command shows the slots), and a CAN round trip (RX decode now uses real lengths; TX frames to the Motec).
@@ -58,6 +80,7 @@ Everything from the review (`reviews/*.md`; `STATUS` list before this change) wa
 - ✅ Protocol: IDENT, INFO (clocks, CAN error counters, scheduler counters, TCAN register), LIVE_GET (24 pin slots), REBOOT
 - ✅ App detects head vs hub from IDENT and shows the matching Device screen (hub: info, project cross-checks, live pin values)
 - ✅ `tools/hub_build_check.sh` compile/link check of the hub project
+- ✅ Runtime hub config: blob + flash log + CAN receive (`hub_canlink.c`) + CFG messages on UART and CAN; head relay (`HUB_RELAY`, CM4 `relay_begin`); app: hub list/scan/open in the Device tab, hub blob upload, `--deploy-hub`
 
 ### Head firmware (`Common/`, `CM4/`, `CM7/`)
 - ✅ Motec/ECU transmit: periodic TX frames (11/29-bit, 1-1000 Hz, up to 8 B on classic buses) with signal packing (Intel/Motorola, signed, float, multiplier/offset), shared FDCAN2 with RX, TX counters in stats; app has a CAN transmit tab (auto-arrange, CSV export)
@@ -71,23 +94,18 @@ Everything from the review (`reviews/*.md`; `STATUS` list before this change) wa
 ## Planned / todo
 ### Head
 - 📋 UDP transport and data stream to the dash (needs LwIP via .ioc: **ask permission first**) and a UDP payload format decision
-- 📋 Hub config push needs a head TX path on the hub bus (the new TX scheduler is for periodic frames; FD/hub bus not enabled for it yet)
 - 📋 TX options not built: send-on-change, per-signal stale handling (today a stale channel is sent as its last value / 0), calibrated-value sending
 - 📋 MPU non-cacheable region for SRAM4 if the CM7 data cache is ever enabled
 - 💡 DBC import for custom CAN receive frames (needs `cantools`)
 
 ### Hub (`../SensorHubV1`)
-- 📋 Hub binary config format + runtime loading + flash storage; hub CFG_* messages (decided: app pushes to hub directly or via head over CAN)
 - 📋 Hub stats/sniffer messages if wanted; hub live-value staleness
-- 📋 Deploy step that copies generated hub C and `hframe.c/.h` into the hub project
-- 📋 CAN receive path on the hub (filters, RX handler)
-- 📋 Hub config push over CAN from the head (`HUB_CFG_*` messages reserved in the protocol), plus a binary hub config format and runtime loading
 - 📋 "other" ID bits [21-28] at TX and `RATE_50HZ`/`RATE_1000HZ` support on the hub
-- 📋 Deploy the generated hub C into `SensorHubV1/Core/Src` (app has no hub deploy step yet)
 
 ### App
-- 📋 Deploy buttons in the UI (hub C, head default blob)
-- 📋 Hub-side bit timing in the project once the hub has runtime config
+- 📋 Deploy buttons in the UI (hub and head default blobs; today `generate --deploy` / `--deploy-hub <id>` on the command line)
+- 📋 Hub-side bit timing in the project (the hub's CAN bit timing is still compiled in from CubeMX)
+- 📋 Hub status-stream mode, mark an AFE as not fitted, head/dash handling of the -8388608 no-data code
 - 💡 Show the on-device config diff against the project
 
 ## Notes

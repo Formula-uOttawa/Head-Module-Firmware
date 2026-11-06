@@ -28,7 +28,7 @@ def test_hub_hframe_is_a_copy_of_common():
 
 @pytest.fixture
 def hub_exe(tmp_path):
-    return build_sim(tmp_path, "hub_sim", ["hframe.c", "hub_proto.c"])
+    return build_sim(tmp_path, "hub_sim", ["hframe.c", "hub_proto.c", "hub_cfg.c"])
 
 
 def test_ident_info_live(hub_exe):
@@ -53,7 +53,7 @@ def test_ident_info_live(hub_exe):
             c.live(24, 1)
         with pytest.raises(m.DeviceError, match="range"):
             c.live(0, 49)
-        for mtype in (m.STATS_GET, m.CFG_BEGIN, m.SNIFF_SET):
+        for mtype in (m.STATS_GET, m.SNIFF_SET):
             with pytest.raises(m.DeviceError, match="unsupported"):
                 c.request(mtype)
         c.t.write(b"ping\n")
@@ -77,12 +77,15 @@ def test_info_payload_layout_and_appended_counters(hub_exe):
     try:
         c = DeviceClient(t, timeout=3.0)
         p = c.request(m.INFO)
-        assert len(p) == 88
+        assert len(p) == 152
         u32 = lambda off: struct.unpack_from("<I", p, off)[0]
         assert p[0] == 1 and u32(4) == 4321 and p[8] == 2 and p[9] == 0x01 and p[10:13] == bytes([5, 4, 1])
         assert [u32(o) for o in (28, 32, 36, 40)] == [100, 2, 7, 0] and p[44:56] == bytes(range(0xA0, 0xAC))
         assert [u32(o) for o in (56, 60, 64, 68, 72, 76, 80)] == [11, 12, 13, 14, 15, 16, 17]
         assert p[84:88] == bytes([0x60, 0x3F, 0x15, 0x00])
+        assert struct.unpack_from("<QQ", p, 88) == (0x1122334455667788, 0) and p[104] == 1 and p[105] == 0x83
+        assert [u32(o) for o in (108, 112, 116, 120, 124)] == [21, 22, 23, 24, 25]
+        assert [u32(o) for o in (128, 132, 136, 140, 144, 148)] == [31, 32, 33, 34, 35, 36]
     finally:
         t.close()
 
@@ -98,10 +101,10 @@ def test_web_detects_hub_and_guards_head_only_calls(tmp_path, hub_exe):
         assert st["info"]["hub_id"] == 2 and st["stats"] is None
         live = c.get("/api/device/live").json()
         assert live["device_type"] == "hub" and live["slots"][3]["slot"] == 3 and live["slots"][3]["value"] == 1003 and live["slots"][3]["stale"] is False
-        for url, kw in (("/api/device/upload", {"json": {"project": sample_project().model_dump(mode="json")}}),
-                        ("/api/device/sniff", {"json": {"bus": 0, "enable": True}})):
-            r = c.post(url, **kw)
-            assert r.status_code == 409 and "hub module" in r.json()["detail"]
+        r = c.post("/api/device/upload", json={"project": sample_project().model_dump(mode="json")})
+        assert r.status_code == 422 and "hub 2 is not defined in this project" in str(r.json()["detail"])  # the hub reported id 2
+        r = c.post("/api/device/sniff", json={"bus": 0, "enable": True})
+        assert r.status_code == 409 and "hub module" in r.json()["detail"]
         assert c.get("/api/device/stats").status_code == 409
         assert c.get("/api/device/config").status_code == 409
         c.post("/api/device/disconnect")
@@ -131,24 +134,33 @@ def _build_hub_hal_sim(tmp_path, harness, sources, defines=()):
     return exe
 
 
-def _run_sim(exe):
-    r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+def _run_sim(exe, *args):
+    r = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and "SIM OK" in r.stdout, r.stdout + r.stderr
+
+
+def _legacy_hub_blob(tmp_path):
+    """Hub 0 blob of the rear-sensor project (tests/fixtures, a snapshot of system.json): the table the schedule/AFE simulations
+    are written against."""
+    from canharness import hubblob
+    f = tmp_path / "hub0.blob"
+    f.write_bytes(hubblob.build(Project.load(Path(__file__).parent / "fixtures" / "rear_hub_project.json"), 0))
+    return f
 
 
 def test_hub_scheduler_generated_config(tmp_path):
     """Staggered groups, 8 bit frame counter in id bits 15:8, sign extended low bytes, digital inputs, TX FIFO full handling."""
-    _run_sim(_build_hub_hal_sim(tmp_path, "sched_sim", ["can_scheduler.c", "live_slots.c", "sensor_config_generated.c"]))
+    _run_sim(_build_hub_hal_sim(tmp_path, "sched_sim", ["can_scheduler.c", "live_slots.c", "hub_cfg.c"]), _legacy_hub_blob(tmp_path))
 
 
 def test_hub_scheduler_rejects_bad_config(tmp_path):
     """Overlapping bytes, id conflicts, counter bits in the id, bad slots and an overloaded tick are detected at init."""
-    _run_sim(_build_hub_hal_sim(tmp_path, "sched_sim", ["can_scheduler.c", "live_slots.c"], ["-DSIM_CUSTOM"]))
+    _run_sim(_build_hub_hal_sim(tmp_path, "sched_sim", ["can_scheduler.c", "live_slots.c", "hub_cfg.c"], ["-DSIM_CUSTOM"]))
 
 
 def test_hub_afe_driver(tmp_path):
     """AFE A/B addressing, init sequence, sign extension, DRDY service, error / watchdog recovery, staleness flags."""
-    _run_sim(_build_hub_hal_sim(tmp_path, "afe_sim", ["afe_ctrl.c", "live_slots.c", "sensor_config_generated.c"]))
+    _run_sim(_build_hub_hal_sim(tmp_path, "afe_sim", ["afe_ctrl.c", "live_slots.c", "hub_cfg.c"]), _legacy_hub_blob(tmp_path))
 
 
 def test_hub_debug_sniff_queue(tmp_path):

@@ -1,9 +1,10 @@
-/* Host simulation of the hub AFE driver: real afe_ctrl.c + live_slots.c + the real generated sensor table, against a
+/* Host simulation of the hub AFE driver: real afe_ctrl.c + live_slots.c + the hub blob given as argv[1] (real hub_cfg.c), against a
  * stub HAL with a small ADS124S08 model on the SPI bus. DRDY edges and DMA completions are driven by the test. */
 #include <stdio.h>
 #include <string.h>
 #include "afe_ctrl.h"
 #include "debug_sniff.h"
+#include "hub_store.h"
 #include "live_slots.h"
 #include "main.h"
 #include "sensor_state.h"
@@ -12,6 +13,9 @@ GPIO_TypeDef stub_gpioa, stub_gpioc, stub_gpiod;
 SPI_TypeDef stub_spi2;
 static SPI_HandleTypeDef hspi2_storage;
 SPI_HandleTypeDef hspi2;
+
+static HubConfig_t g_cfg;
+const HubConfig_t *HubCfg_Active(void) { return &g_cfg; }
 
 static uint32_t g_tick = 5000;
 static int g_fail = 0;
@@ -136,11 +140,16 @@ static void reset_world(void)
     LiveSlots_Init();
 }
 
-extern const uint8_t A_ACTIVE_SENSORS_COUNT, B_ACTIVE_SENSORS_COUNT;
 
-int main(void)
+int main(int argc, char **argv)
 {
     (void)hspi2_storage;
+    uint8_t blob[HUB_MAX_BLOB];
+    FILE *bf = argc > 1 ? fopen(argv[1], "rb") : NULL;
+    if (!bf) { printf("usage: afe_sim <hub blob>\n"); return 2; }
+    size_t blen = fread(blob, 1, sizeof blob, bf);
+    fclose(bf);
+    if (HubCfg_Parse(blob, (uint32_t)blen, &g_cfg) != HUB_CFG_OK) { printf("blob rejected\n"); return 2; }
     const AfeStats_t *st = AfeGetStats();
 
     /* ---- init ---------------------------------------------------------------------------------------------------- */

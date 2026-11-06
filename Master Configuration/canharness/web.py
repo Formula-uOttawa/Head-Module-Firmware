@@ -17,6 +17,7 @@ from .generators.dash_json import generate_dash
 from .generators.head_c import generate_head
 from .generators.hub_c import generate_hub
 from .legacy import from_data
+from . import hubblob
 from .blob import build as build_blob, parse as parse_blob
 from .device import messages as devmsg
 from .device.session import DeviceSession, list_ports
@@ -80,9 +81,9 @@ def create_app(project_path: Path, out_dir: Path, transport_factory=None) -> Fas
         for h in project.hubs:
             d = out_dir / f"hub_{h.hub_id}"
             d.mkdir(parents=True, exist_ok=True)
-            f = d / "sensor_config_generated.c"
-            f.write_text(generate_hub(project, h.hub_id), encoding="utf-8")
-            files.append(str(f))
+            for name, data in generate_hub(project, h.hub_id).items():
+                (d / name).write_bytes(data if isinstance(data, bytes) else data.encode())
+                files.append(str(d / name))
         d = out_dir / "head"
         d.mkdir(parents=True, exist_ok=True)
         for name, data in generate_head(project).items():
@@ -106,7 +107,7 @@ def create_app(project_path: Path, out_dir: Path, transport_factory=None) -> Fas
     # ---- device ------------------------------------------------------------------------------------------------
     @app.get("/api/device/ports")
     def dev_ports():
-        return {"ports": list_ports(), "connected": dev.port}
+        return {"ports": list_ports(), "connected": dev.port, "target_hub": dev.target}
 
     @app.post("/api/device/connect")
     def dev_connect(body: dict = Body(...)):
@@ -126,6 +127,17 @@ def create_app(project_path: Path, out_dir: Path, transport_factory=None) -> Fas
     def dev_ascii(body: dict = Body(...)):
         return device_call(dev.ascii, str(body["line"]))
 
+    @app.post("/api/device/hubs/scan")
+    def dev_hub_scan(body: dict = Body(default={})):
+        ids = [int(i) for i in body.get("ids", range(8))]
+        return {"hubs": device_call(dev.scan_hubs, ids)}
+
+    @app.post("/api/device/target")
+    def dev_target(body: dict = Body(...)):
+        hub = body.get("hub_id")
+        info = device_call(dev.select_hub, None if hub is None else int(hub))
+        return {"target_hub": dev.target, "info": info}
+
     @app.get("/api/device/info")
     def dev_info():
         return device_call(dev.info)
@@ -136,16 +148,31 @@ def create_app(project_path: Path, out_dir: Path, transport_factory=None) -> Fas
         issues = validate(project)
         if errors(issues):
             raise HTTPException(422, detail=[str(i) for i in errors(issues)])
+        apply, store = bool(body.get("apply", True)), bool(body.get("store", False))
+        hub_id = None
         try:
-            blob = build_blob(project)
+            if device_call(lambda: dev.device_type) == "hub":
+                # a hub (directly connected, or selected behind the head) always stores its config; "apply" = reset into it
+                hub_id = body.get("as_hub")
+                hub_id = device_call(lambda: dev.hub_id) if hub_id is None else int(hub_id)
+                if hub_id is None:
+                    raise HTTPException(422, detail=["this hub did not report its hub id; select it in the hub list first"])
+                if not any(h.hub_id == hub_id for h in project.hubs):
+                    raise HTTPException(422, detail=[f"hub {hub_id} is not defined in this project"])
+                blob, store = hubblob.build(project, hub_id), True
+            else:
+                blob = build_blob(project)
         except ValueError as e:
             raise HTTPException(422, detail=[str(e)])
-        res = device_call(dev.upload, blob, bool(body.get("apply", True)), bool(body.get("store", False)))
-        return dict(res, bytes=len(blob), project_hash=project.config_hash())
+        res = device_call(dev.upload, blob, apply, store)
+        return dict(res, bytes=len(blob), project_hash=project.config_hash(), **({} if hub_id is None else {"hub_id": hub_id}))
 
     @app.get("/api/device/config")
     def dev_config(source: str = "active"):
         blob = device_call(dev.download, source)
+        if device_call(lambda: dev.device_type) == "hub":
+            parsed = hubblob.parse(blob)
+            return {"bytes": len(blob), "hash": f"{parsed['config_hash']:016x}", "hub_id": parsed["hub_id"], "counts": {"sensors": len(parsed["sensors"])}}
         parsed = parse_blob(blob)
         return {"bytes": len(blob), "hash": f"{parsed['config_hash']:016x}",
                 "counts": {k: len(v) for k, v in parsed.items() if isinstance(v, list)}}

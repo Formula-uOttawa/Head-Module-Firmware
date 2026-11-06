@@ -8,8 +8,10 @@
  *
  * Ownership (a field has exactly one writer):
  *   CM4: magic, cm4_heartbeat, active_*, publish_seq, fdcan_kernel_hz, bus_count, channel_count, boot_apply_*, cm4_status,
- *        cmd_ack, cmd_result, cmd_result_seq, sniff_head, sniff_dropped, stats, live, sniff[], active_blob.
+ *        cmd_ack, cmd_result, cmd_result_seq, sniff_head, sniff_dropped, stats, live, sniff[], active_blob, relay_len, can_diag.
  *   CM7: stage, cmd, cmd_arg, cmd_len, cmd_crc, cmd_seq, cmd_req, sniff_mask, sniff_tail.
+ *   relay_buf: the CM7 writes the request before issuing HEAD_CMD_HUB_RELAY; the CM4 copies it at once and, only just before it
+ *        acknowledges, writes the hub's reply into the same buffer (with relay_len); the CM7 reads it after the acknowledge.
  * (`active_source` is CM4-owned: the CM7 changes it only through HEAD_CMD_APPLY_STAGED's cmd_arg or HEAD_CMD_SET_SOURCE.)
  * Caches: the CM7 data cache is currently disabled. If it is ever enabled, mark this region non-cacheable in the MPU.
  *
@@ -59,6 +61,24 @@
 #define HEAD_CM4_ST_BUSES_DOWN 0x01u   /* an apply failed AND the rollback to the previous config failed: the buses are stopped */
 #define HEAD_CM4_ST_BOOT_PENDING 0x02u /* the boot-time apply is still being retried (FDCAN kernel clock not available yet) */
 
+#define HEAD_CMD_HUB_RELAY 5u     /* relay one hub protocol message over the hub bus: cmd_arg = hub id (0..7), request message (type, seq, payload)
+                                     in relay_buf, length in cmd_len, cmd_crc = timeout in ms (0 = default). The CM4 acknowledges when the hub has answered or HRELAY_TIMEOUT_MS passed
+                                     (cmd_result HERR_TIMEOUT); the reply message is then in relay_buf, its length in relay_len. */
+#define HEAD_RELAY_BUF 256u
+
+/* FDCAN controller snapshot per peripheral (index = peripheral - 1), refreshed by the CM4 every 100 ms; read by the "can:status" console
+   command. Plain statistics: no seqlock, a torn read only shows a mixed snapshot. */
+typedef struct {
+    volatile uint32_t running;   /* 1 = started by the active config */
+    volatile uint32_t nbtp, dbtp, tdcr, cccr; /* raw registers: nominal / data bit timing, delay compensation, control */
+    volatile uint32_t tec, rec;  /* transmit / receive error counters */
+    volatile uint32_t bus_off, passive, warning;
+    volatile uint32_t activity;  /* 0 synchronising, 1 idle, 2 receiving, 3 transmitting */
+    volatile uint32_t tdcv;      /* measured transmitter delay (TDC value) */
+    volatile uint32_t lec_seen;  /* bit n set = last error code n seen since the config was applied (arbitration phase) */
+    volatile uint32_t dlec_seen; /* the same for the data phase. Codes: 1 stuff, 2 form, 3 ack, 4 bit1, 5 bit0, 6 crc */
+} HeadCanDiag_t;
+
 #define HEAD_SNIFF_RING 32u
 typedef struct {
     uint32_t id;
@@ -88,6 +108,9 @@ typedef struct {
     volatile uint32_t cmd_ack, cmd_result, cmd_result_seq;              /* CM4 -> CM7 */
 
     volatile uint32_t sniff_head, sniff_tail, sniff_dropped;
+    volatile uint32_t relay_len; /* CM4 -> CM7: length of the reply in relay_buf */
+    HeadCanDiag_t can_diag[2];   /* peripheral 1 (FDCAN1), 2 (FDCAN2) */
+    uint8_t relay_buf[HEAD_RELAY_BUF] __attribute__((aligned(4)));
     HeadStats_t stats;
     HeadLive_t live;
     HeadSniffEntry_t sniff[HEAD_SNIFF_RING];

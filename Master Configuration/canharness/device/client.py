@@ -80,6 +80,28 @@ class DeviceClient:
                 f"{nrx} bytes received but no valid reply" + (f", {bad} failed CRC (baud rate or noise?)" if bad else ""))
         raise TimeoutError(f"device did not answer {m.name(mtype)}: {seen}")
 
+    # --- hubs behind the head --------------------------------------------------------------------------------
+    def relay(self, hub: int, mtype: int, payload: bytes = b"", timeout: float = 1.0) -> bytes:
+        """Send one hub protocol message to `hub` through the head (UART -> head -> CAN) and return the hub's reply payload.
+        Raises HubTimeout if the hub did not answer on the bus and DeviceError for an error the hub itself reported."""
+        self.relay_seq = (getattr(self, "relay_seq", 0) + 1) & 0xFF or 1
+        inner = bytes([mtype, self.relay_seq]) + payload
+        wait_ms = max(20, min(1000, int(timeout * 1000)))  # the head clamps to 1000 ms
+        try:
+            p = self.request(m.HUB_RELAY, struct.pack("<BH", hub, wait_ms) + inner, timeout=timeout + 2.0)
+        except m.DeviceError as e:
+            if e.request_type == m.HUB_RELAY and e.code == 7:
+                raise m.HubTimeout(hub, mtype) from None
+            raise
+        if len(p) < 3 or p[0] != hub or p[2] != self.relay_seq:
+            raise m.DeviceError(m.HUB_RELAY, 1)  # a reply that does not belong to this request
+        rtype, rpayload = p[1], p[3:]
+        if rtype == m.ERROR:
+            raise m.DeviceError(rpayload[0], rpayload[1])
+        if rtype != (mtype | 0x80):
+            raise m.DeviceError(mtype, 1)
+        return rpayload
+
     # --- high level -----------------------------------------------------------------------------------------
     def ident(self) -> dict:
         """Which board is this? Head firmware from before IDENT existed answers 'unsupported'; that means a head."""
@@ -136,6 +158,22 @@ class DeviceClient:
 
     def reboot(self) -> None:
         self.request(m.REBOOT, struct.pack("<I", m.REBOOT_MAGIC))
+
+
+class HubViaHead(DeviceClient):
+    """The hub protocol of one hub tunnelled through a connected head module: same high-level calls as a directly connected hub
+    (info, config upload / read / clear, live, reboot), every request travels as HUB_RELAY."""
+
+    def __init__(self, head: DeviceClient, hub_id: int):
+        self.head, self.hub_id = head, hub_id
+        self.t, self.timeout = head.t, head.timeout
+        self.device_type = "hub"
+
+    def request(self, mtype: int, payload: bytes = b"", timeout: Optional[float] = None) -> bytes:
+        return self.head.relay(self.hub_id, mtype, payload, timeout=timeout if timeout is not None else 1.0)
+
+    def pump(self, timeout: float = 0.05) -> None:
+        self.head.pump(timeout)
 
 
 def _pump(self, timeout: float = 0.05) -> None:

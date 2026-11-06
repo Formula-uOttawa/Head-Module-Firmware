@@ -31,6 +31,10 @@ static void get_info(void *c, HubInfo_t *i)
     i->tx_drop_full = 11; i->afe_spi_err = 12; i->afe_resyncs = 13; i->afe_drdy_overrun = 14;
     i->rx_overflow = 15; i->uart_err = 16; i->uart_tx_fail = 17;
     i->tcan_init_status = 0x60; i->afe_status = 0x3F; i->inputs = 0x15;
+    /* appended configuration fields (bytes 88..127) */
+    i->active_hash = 0x1122334455667788ull; i->stored_hash = 0; i->active_source = 1; i->cfg_status = 0x83;
+    i->canrx_frames = 21; i->canrx_msgs = 22; i->canrx_bad = 23; i->canrx_overrun = 24; i->cantx_fail = 25;
+    i->afe_samples[0] = 31; i->afe_samples[1] = 32; i->afe_drdy_edges[0] = 33; i->afe_drdy_edges[1] = 34; i->afe_resyncs_by[0] = 35; i->afe_resyncs_by[1] = 36;
 }
 
 static uint16_t live_get(void *c, uint16_t first, uint16_t count, uint8_t *dst)
@@ -53,7 +57,7 @@ static void do_reboot(void *c)
     (void)r;
 }
 
-static const HubProtoOps_t ops = { get_info, live_get, do_reboot };
+static const HubProtoOps_t ops = { get_info, live_get, do_reboot, NULL, NULL, NULL, NULL };
 
 static void on_msg(void *c, const uint8_t *msg, size_t len)
 {

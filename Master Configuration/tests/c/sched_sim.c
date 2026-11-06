@@ -1,9 +1,10 @@
 /* Host simulation of the hub CAN scheduler: real can_scheduler.c + live_slots.c against a stub HAL.
- * Default build links the real generated sensor_config_generated.c; -DSIM_CUSTOM uses a deliberately broken table. */
+ * Default build parses the hub blob given as argv[1] (real hub_cfg.c); -DSIM_CUSTOM uses a deliberately broken table. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "can_scheduler.h"
+#include "hub_store.h"
 #include "live_slots.h"
 #include "main.h"
 #include "sensor_state.h"
@@ -56,11 +57,12 @@ static int tick_once(void)
     return g_nframes - before;
 }
 
+static HubConfig_t g_cfg;
+const HubConfig_t *HubCfg_Active(void) { return &g_cfg; }
+
 #ifdef SIM_CUSTOM
-const uint8_t HUB_ID = 7;
-volatile uint32_t LIVE_SENSOR_DATA[MAX_SENSORS];
 #define SC(id, rate, off, len, slot) { .frame_id = (id), .afe = 1, .afe_channel = 0, .sensor_type = SENSOR_TYPE_ACTIVE, .sample_rate = (rate), .byte_offset = (off), .byte_length = (len), .live_sensor_mapping = (slot) }
-const SensorConfig_t A_ACTIVE_SENSORS_CONFIG[] = {
+static const SensorConfig_t CUSTOM_A[] = {
     SC(0x00100000, RATE_200HZ, 4, 2, 0),    /* ok */
     SC(0x00100000, RATE_200HZ, 5, 2, 1),    /* overlaps byte 5 of the previous signal: rejected */
     SC(0x00100000, RATE_10HZ, 8, 2, 2),     /* same CAN id as an existing group with another rate: conflict */
@@ -72,17 +74,27 @@ const SensorConfig_t A_ACTIVE_SENSORS_CONFIG[] = {
     SC(0x00120000, RATE_200HZ, 4, 2, 7),
     SC(0x00130000, RATE_200HZ, 4, 2, 8),
 };
-const uint8_t A_ACTIVE_SENSORS_COUNT = 10;
-const SensorAfeConfig_t A_ACTIVE_SENSORS_AFE_CONFIG[1];
-const SensorConfig_t B_ACTIVE_SENSORS_CONFIG[1];
-const SensorAfeConfig_t B_ACTIVE_SENSORS_AFE_CONFIG[1];
-const uint8_t B_ACTIVE_SENSORS_COUNT = 0;
-const SensorConfig_t DIG_ACTIVE_SENSORS_CONFIG[] = { SC(0x00400000, RATE_100HZ, 4, 2, 20) };
-const uint8_t DIG_ACTIVE_SENSORS_COUNT = 1;
+static const SensorConfig_t CUSTOM_DIG[] = { SC(0x00400000, RATE_100HZ, 4, 2, 20) };
 #endif
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef SIM_CUSTOM
+    (void)argc; (void)argv;
+    memcpy(g_cfg.a, CUSTOM_A, sizeof CUSTOM_A);
+    g_cfg.a_count = sizeof CUSTOM_A / sizeof CUSTOM_A[0];
+    memcpy(g_cfg.dig, CUSTOM_DIG, sizeof CUSTOM_DIG);
+    g_cfg.dig_count = 1;
+    g_cfg.hub_id = 7;
+#else
+    uint8_t blob[HUB_MAX_BLOB];
+    FILE *bf = argc > 1 ? fopen(argv[1], "rb") : NULL;
+    if (!bf) { printf("usage: sched_sim <hub blob>\n"); return 2; }
+    size_t blen = fread(blob, 1, sizeof blob, bf);
+    fclose(bf);
+    HubCfgStatus_t cs = HubCfg_Parse(blob, (uint32_t)blen, &g_cfg);
+    if (cs != HUB_CFG_OK) { printf("blob rejected: %s\n", HubCfg_StatusText(cs)); return 2; }
+#endif
     LiveSlots_Init();
     CanScheduler_Init(&can);
     const CanSchedulerStats_t *st = CanScheduler_GetStats();

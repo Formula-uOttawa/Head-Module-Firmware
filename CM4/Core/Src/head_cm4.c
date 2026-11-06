@@ -20,6 +20,7 @@
 #include "head_cfg.h"
 #include "head_decode.h"
 #include "head_encode.h"
+#include "head_relay.h"
 #include "head_rxq.h"
 #include "head_shared.h"
 #include "head_slots.h"
@@ -57,6 +58,9 @@ static uint32_t s_sniff_applied, s_sniff_next_ms;
 static uint32_t s_last_slow_ms, s_last_stale_ms;
 static bool s_boot_pending;
 static uint32_t s_boot_next_ms;
+static HeadRelay_t s_relay;             /* hub config relay (CM7 mailbox command HEAD_CMD_HUB_RELAY), one message at a time */
+static bool s_relay_pending;            /* a relay is in flight: the mailbox request s_relay_req is acknowledged when it finishes */
+static uint32_t s_relay_req, s_relay_seq;
 
 static FDCAN_HandleTypeDef *periph_handle(uint8_t p)
 {
@@ -173,7 +177,7 @@ static uint8_t can_validate(const HeadConfig_t *c, uint32_t kernel_hz)
                 tx_need = c->tx_frames[i].dlc;
         if (rx_need > elmt_bytes(h->Init.RxFifo0ElmtSize) || tx_need > elmt_bytes(h->Init.TxElmtSize))
             return HERR_UNSUPPORTED;
-        if (bus->fd && bus->data_bitrate > TDC_MIN_DATA_BITRATE && dt.prescaler * dt.seg1 > TDC_OFFSET_MAX)
+        if (bus->fd && bus->data_bitrate > TDC_MIN_DATA_BITRATE && (1u + dt.seg1) * dt.prescaler > TDC_OFFSET_MAX)
             return HERR_INVALID_CONFIG;
     }
     return HERR_NONE;
@@ -202,7 +206,8 @@ static uint8_t can_start(const HeadConfig_t *c, uint32_t kernel_hz)
                 else
                     nstd++;
             }
-        if (nstd > HEAD_MAX_STD_FILTERS_PER_BUS || next > HEAD_MAX_EXT_FILTERS_PER_BUS)
+        const bool relay_filter = bus->role == 1; /* the hub bus also receives the hubs' ACK frames (config relay replies) */
+        if (nstd > HEAD_MAX_STD_FILTERS_PER_BUS || next + (relay_filter ? 1u : 0u) > HEAD_MAX_EXT_FILTERS_PER_BUS)
             return HERR_TOO_BIG;
 
         if (HAL_FDCAN_DeInit(h) != HAL_OK)
@@ -219,7 +224,7 @@ static uint8_t can_start(const HeadConfig_t *c, uint32_t kernel_hz)
             h->Init.DataTimeSeg2 = dt.seg2;
         }
         h->Init.StdFiltersNbr = nstd;
-        h->Init.ExtFiltersNbr = next;
+        h->Init.ExtFiltersNbr = next + (relay_filter ? 1u : 0u);
         if (HAL_FDCAN_Init(h) != HAL_OK)
             return HERR_INVALID_CONFIG;
 
@@ -239,10 +244,22 @@ static uint8_t can_start(const HeadConfig_t *c, uint32_t kernel_hz)
             if (HAL_FDCAN_ConfigFilter(h, &flt) != HAL_OK)
                 return HERR_INVALID_CONFIG;
         }
+        if (relay_filter) { /* every ACK frame of every hub: message type bits only (hcanlink.h) */
+            FDCAN_FilterTypeDef flt;
+            memset(&flt, 0, sizeof flt);
+            flt.IdType = FDCAN_EXTENDED_ID;
+            flt.FilterIndex = ei++;
+            flt.FilterType = FDCAN_FILTER_MASK;
+            flt.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+            flt.FilterID1 = HCL_ID(HCL_TYPE_ACK, 0, 0);
+            flt.FilterID2 = HCL_TYPE_FILTER_MASK;
+            if (HAL_FDCAN_ConfigFilter(h, &flt) != HAL_OK)
+                return HERR_INVALID_CONFIG;
+        }
         if (set_global_filter(h, (sniff >> b) & 1u) != HAL_OK)
             return HERR_INVALID_CONFIG;
         if (bus->fd && bus->data_bitrate > TDC_MIN_DATA_BITRATE) { /* transmit delay compensation, needed for TX above 1 Mbit/s */
-            if (HAL_FDCAN_ConfigTxDelayCompensation(h, h->Init.DataPrescaler * h->Init.DataTimeSeg1, 0) != HAL_OK ||
+            if (HAL_FDCAN_ConfigTxDelayCompensation(h, (1u + h->Init.DataTimeSeg1) * h->Init.DataPrescaler, 0) != HAL_OK ||
                 HAL_FDCAN_EnableTxDelayCompensation(h) != HAL_OK)
                 return HERR_INVALID_CONFIG;
         }
@@ -264,6 +281,7 @@ static void swap_config(HeadConfig_t *cfg)
     s_rxq.high = 0;
     __enable_irq();
     g_cfg = cfg;
+    memset((void *)SH->can_diag, 0, sizeof SH->can_diag); /* error history belongs to one config / one set of bit timings */
     HeadDecode_Reset(&SH->live, &SH->stats);
     HeadTx_Reset(&s_tx);
 }
@@ -364,6 +382,47 @@ static uint8_t set_source(uint32_t source)
     return HERR_NONE;
 }
 
+/* HeadRelay_Poll transmit callback: one frame on the hub bus (extended id, FD) */
+static bool relay_tx(void *ctx, uint32_t id, const uint8_t *data, uint8_t len)
+{
+    (void)ctx;
+    const HeadConfig_t *c = g_cfg;
+    return c->hub_bus >= 0 && tx_send((void *)c, (uint8_t)c->hub_bus, id, true, data, len);
+}
+
+/* HEAD_CMD_HUB_RELAY: start forwarding relay_buf to a hub. Asynchronous: the mailbox request is acknowledged by
+   relay_service() once the hub answered, so the receive path keeps being served meanwhile. */
+static uint8_t relay_begin(uint32_t hub, uint32_t len, uint32_t timeout_ms)
+{
+    const HeadConfig_t *c = g_cfg;
+    if (c->hub_bus < 0)
+        return HERR_UNSUPPORTED; /* the active config has no hub bus */
+    if (s_bus_of[c->buses[c->hub_bus].peripheral] != (uint8_t)c->hub_bus)
+        return HERR_BUSY; /* hub bus is not running */
+    if (hub > 7u || len < 2u || len > HEAD_RELAY_BUF)
+        return HERR_RANGE;
+    if (timeout_ms == 0 || timeout_ms > HRELAY_TIMEOUT_MS)
+        timeout_ms = HRELAY_TIMEOUT_MS;
+    return HeadRelay_Start(&s_relay, (uint8_t)hub, SH->relay_buf, (uint16_t)len, HAL_GetTick(), timeout_ms);
+}
+
+static void relay_service(uint32_t now)
+{
+    if (!s_relay_pending || !HeadRelay_Poll(&s_relay, now, relay_tx, NULL))
+        return;
+    uint8_t rc = s_relay.result;
+    if (rc == HERR_NONE) {
+        memcpy(SH->relay_buf, s_relay.rsp, s_relay.rsp_len);
+        SH->relay_len = s_relay.rsp_len;
+    }
+    HeadRelay_Take(&s_relay);
+    s_relay_pending = false;
+    SH->cmd_result = rc;
+    SH->cmd_result_seq = s_relay_seq;
+    HEAD_MEM_BARRIER();
+    SH->cmd_ack = s_relay_req;
+}
+
 static uint8_t run_command(uint32_t cmd, uint32_t arg, uint32_t len, uint32_t crc)
 {
     switch (cmd) {
@@ -390,6 +449,8 @@ void HeadCm4_Init(void)
     HEAD_MEM_BARRIER();
     memset((void *)&SH->cm4_heartbeat, 0, offsetof(HeadShared_t, stage) - offsetof(HeadShared_t, cm4_heartbeat));
     HeadRxQ_Init(&s_rxq);
+    HeadRelay_Init(&s_relay);
+    s_relay_pending = false;
     for (uint32_t i = 0; i < 2; i++)
         s_cfg[i].hub_bus = -1;
     for (uint8_t p = 0; p <= HEAD_MAX_PERIPHERAL; p++)
@@ -438,7 +499,10 @@ static void drain_rx(void)
     const HeadRxEntry_t *e;
     for (uint32_t n = 0; n < RX_POLL_MAX_FRAMES && (e = HeadRxQ_Peek(&s_rxq)) != NULL; n++) {
         const bool ext = (e->flags & HEAD_RXQ_FLAG_EXT) != 0;
-        (void)HeadDecode_Process(cfg, &SH->live, &SH->stats, e->bus, e->id, ext, e->data, e->len, e->ts_ms);
+        if (ext && cfg->hub_bus >= 0 && e->bus == (uint8_t)cfg->hub_bus && HCL_ID_TYPE(e->id) == HCL_TYPE_ACK)
+            (void)HeadRelay_OnFrame(&s_relay, e->id, e->data, e->len); /* a hub's config reply, not sensor data */
+        else
+            (void)HeadDecode_Process(cfg, &SH->live, &SH->stats, e->bus, e->id, ext, e->data, e->len, e->ts_ms);
 
         if (e->bus < 32u && ((SH->sniff_mask >> e->bus) & 1u)) {
             uint32_t head = SH->sniff_head;
@@ -501,6 +565,31 @@ static void sniff_poll(uint32_t now)
         s_sniff_next_ms = now + SNIFF_RETRY_MS;
 }
 
+/* Snapshot of one running FDCAN for the "can:status" console command (see HeadCanDiag_t). */
+static void update_diag(FDCAN_HandleTypeDef *h, uint8_t peripheral, const FDCAN_ProtocolStatusTypeDef *ps)
+{
+    HeadCanDiag_t *d = &SH->can_diag[peripheral - 1u];
+    FDCAN_ErrorCountersTypeDef ec;
+    d->running = 1;
+    d->nbtp = h->Instance->NBTP;
+    d->dbtp = h->Instance->DBTP;
+    d->tdcr = h->Instance->TDCR;
+    d->cccr = h->Instance->CCCR;
+    if (HAL_FDCAN_GetErrorCounters(h, &ec) == HAL_OK) {
+        d->tec = ec.TxErrorCnt;
+        d->rec = ec.RxErrorCnt;
+    }
+    d->bus_off = ps->BusOff != 0;
+    d->passive = ps->ErrorPassive != 0;
+    d->warning = ps->Warning != 0;
+    d->activity = (ps->Activity >> 3) & 3u;
+    d->tdcv = ps->TDCvalue;
+    if (ps->LastErrorCode >= 1u && ps->LastErrorCode <= 6u)
+        d->lec_seen |= 1u << ps->LastErrorCode;
+    if (ps->DataLastErrorCode >= 1u && ps->DataLastErrorCode <= 6u)
+        d->dlec_seen |= 1u << ps->DataLastErrorCode;
+}
+
 void HeadCm4_Poll(void)
 {
     if (SH->magic != HEAD_SHARED_MAGIC)
@@ -512,15 +601,30 @@ void HeadCm4_Poll(void)
     drain_rx();
 
     const uint32_t req = SH->cmd_req; /* snapshot: a new request is only legal once this one is acknowledged */
-    if (req != SH->cmd_ack) { /* command from the CM7 */
+    if (!s_relay_pending && req != SH->cmd_ack) { /* command from the CM7 */
         HEAD_MEM_BARRIER();
         const uint32_t seq = SH->cmd_seq;
-        uint8_t rc = run_command(SH->cmd, SH->cmd_arg, SH->cmd_len, SH->cmd_crc);
-        SH->cmd_result = rc;
-        SH->cmd_result_seq = seq;
-        HEAD_MEM_BARRIER();
-        SH->cmd_ack = req;
+        if (SH->cmd == HEAD_CMD_HUB_RELAY) {
+            const uint8_t rc = relay_begin(SH->cmd_arg, SH->cmd_len, SH->cmd_crc);
+            if (rc == HERR_NONE) { /* acknowledged by relay_service() */
+                s_relay_pending = true;
+                s_relay_req = req;
+                s_relay_seq = seq;
+            } else {
+                SH->cmd_result = rc;
+                SH->cmd_result_seq = seq;
+                HEAD_MEM_BARRIER();
+                SH->cmd_ack = req;
+            }
+        } else {
+            uint8_t rc = run_command(SH->cmd, SH->cmd_arg, SH->cmd_len, SH->cmd_crc);
+            SH->cmd_result = rc;
+            SH->cmd_result_seq = seq;
+            HEAD_MEM_BARRIER();
+            SH->cmd_ack = req;
+        }
     }
+    relay_service(now);
 
     if (s_boot_pending && (int32_t)(now - s_boot_next_ms) >= 0) {
         s_boot_next_ms = now + BOOT_RETRY_MS;
@@ -546,7 +650,11 @@ void HeadCm4_Poll(void)
             if (h && s_bus_of[c->buses[b].peripheral] != NO_BUS && HAL_FDCAN_GetProtocolStatus(h, &ps) == HAL_OK) {
                 SH->stats.bus[b].bus_off = (uint8_t)(ps.BusOff != 0); /* reported only; there is no automatic bus-off recovery */
                 SH->stats.bus[b].passive = (uint8_t)(ps.ErrorPassive != 0);
+                update_diag(h, c->buses[b].peripheral, &ps); /* reading the status clears the last error codes, so latch them here */
             }
         }
+        for (uint8_t p = 1; p <= HEAD_MAX_PERIPHERAL; p++)
+            if (s_bus_of[p] == NO_BUS)
+                SH->can_diag[p - 1u].running = 0;
     }
 }

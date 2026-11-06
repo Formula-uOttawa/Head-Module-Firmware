@@ -6,13 +6,15 @@ import struct
 
 INFO, CFG_BEGIN, CFG_CHUNK, CFG_COMMIT, CFG_READ, CFG_CLEAR, IDENT = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
 DEVICE_HEAD, DEVICE_HUB = 1, 2
-LIVE_GET, STATS_GET, SNIFF_SET, SNIFF_FRAME, REBOOT, ERROR = 0x10, 0x11, 0x30, 0xB1, 0x70, 0xFF
+LIVE_GET, STATS_GET, SNIFF_SET, SNIFF_FRAME, HUB_RELAY, REBOOT, ERROR = 0x10, 0x11, 0x30, 0xB1, 0x40, 0x70, 0xFF
+HUB_ASCII = 0x20  # hub only: request = a console command line, reply = the text it printed (the UART console over any transport)
 COMMIT_APPLY, COMMIT_STORE = 0x01, 0x02
 REBOOT_MAGIC = 0xB007F00D  # REBOOT must carry this little-endian u32, so a stray frame cannot reset the board
 CHUNK_MAX = 240
 
 NAMES = {INFO: "INFO", IDENT: "IDENT", CFG_BEGIN: "CFG_BEGIN", CFG_CHUNK: "CFG_CHUNK", CFG_COMMIT: "CFG_COMMIT", CFG_READ: "CFG_READ",
-         CFG_CLEAR: "CFG_CLEAR", LIVE_GET: "LIVE_GET", STATS_GET: "STATS_GET", SNIFF_SET: "SNIFF_SET", REBOOT: "REBOOT"}
+         CFG_CLEAR: "CFG_CLEAR", LIVE_GET: "LIVE_GET", STATS_GET: "STATS_GET", SNIFF_SET: "SNIFF_SET", REBOOT: "REBOOT",
+         HUB_RELAY: "HUB_RELAY", HUB_ASCII: "HUB_ASCII"}
 
 
 def name(mtype: int) -> str:
@@ -27,6 +29,14 @@ class DeviceError(Exception):
     def __init__(self, request_type: int, code: int):
         super().__init__(f"{name(request_type)} failed: {ERRORS.get(code, code)}")
         self.request_type, self.code = request_type, code
+
+
+class HubTimeout(DeviceError):
+    """A hub reached through the head did not answer on the CAN bus (not connected, wrong hub id, hub not powered / CAN not running)."""
+
+    def __init__(self, hub: int, request_type: int):
+        Exception.__init__(self, f"hub {hub} did not answer {name(request_type)} over CAN (check power, wiring, hub id and that its CAN started)")
+        self.request_type, self.code, self.hub = request_type, 7, hub
 
 
 class WrongDevice(DeviceError):
@@ -55,6 +65,10 @@ AFE_STATUS_BITS = {0x01: "AFE A responds", 0x02: "AFE B responds", 0x04: "AFE A 
                    0x10: "AFE A config ok", 0x20: "AFE B config ok", 0x80: "SPI2 not in mode 1"}
 
 
+CFG_STATUS = {1: "too short", 2: "bad magic", 3: "unsupported version", 4: "bad length", 5: "crc mismatch", 6: "bad section",
+              7: "over limit", 8: "value out of range"}
+
+
 def parse_hub_info(p: bytes) -> dict:
     proto, _, fw, up, hub_id, flags, na, nb, nd, tcan, tec, rec, bus_off, passive = struct.unpack_from("<BBHIBBBBBBBBBB", p)
     sysclk, kernel, ok, fail, skipped, invalid = struct.unpack_from("<IIIIII", p, 20)
@@ -73,7 +87,20 @@ def parse_hub_info(p: bytes) -> dict:
                        "status_text": [t for bit, t in AFE_STATUS_BITS.items() if afe & bit]}
         info["uart"] = {"rx_overflow": rx_over, "errors": uart_err, "tx_failures": tx_fail}
         info["tcan_init"] = {"status": init, "notes": [t for bit, t in TCAN_INIT_BITS.items() if init & bit]}
-        info["inputs"] = {"fault": [bool(inputs >> i & 1) for i in range(4)], "pg_5v": bool(inputs & 0x10), "can_int": bool(inputs & 0x20)}
+        info["inputs"] = {"fault": [bool(inputs >> i & 1) for i in range(4)], "pg_5v": bool(inputs & 0x10), "can_int": bool(inputs & 0x20),
+                          "drdy": [bool(inputs & 0x40), bool(inputs & 0x80)]}
+    if len(p) >= 128:  # configuration fields (hubs that store a runtime config)
+        ah, sh = struct.unpack_from("<QQ", p, 88)
+        src, cfgst = p[104], p[105]
+        rx_frames, rx_msgs, rx_bad, rx_over, tx_fail = struct.unpack_from("<IIIII", p, 108)
+        rej = cfgst & 0x0F
+        info["config"] = {"active_hash": f"{ah:016x}", "stored_hash": f"{sh:016x}" if sh else None,
+                          "active_source": ["default", "flash"][src] if src < 2 else src,
+                          "rejected": CFG_STATUS.get(rej, str(rej)) if rej else None, "default_unusable": bool(cfgst & 0x80)}
+        info["canlink"] = {"rx_frames": rx_frames, "messages": rx_msgs, "dropped": rx_bad, "rx_overrun": rx_over, "tx_failures": tx_fail}
+    if len(p) >= 152:  # per-AFE acquisition counters
+        sa, sb, ea, eb, ra, rb = struct.unpack_from("<IIIIII", p, 128)
+        info["afe"]["per_afe"] = {"samples": [sa, sb], "drdy_edges": [ea, eb], "resyncs": [ra, rb]}
     return info
 
 

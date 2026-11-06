@@ -85,8 +85,8 @@ def test_firmware_parser_agrees_and_rejects(tmp_path):
 # ---- protocol against the real firmware dispatcher -----------------------------------------------------------------
 
 class ProcTransport(Transport):
-    def __init__(self, exe):
-        self.p = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+    def __init__(self, exe, *args):
+        self.p = subprocess.Popen([str(exe), *map(str, args)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         import os, select
         self._select, self._os = select, os
 

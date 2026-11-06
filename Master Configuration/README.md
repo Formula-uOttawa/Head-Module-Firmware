@@ -7,6 +7,9 @@ Single source of truth for hub, head and dash configuration.
     .venv/bin/python -m canharness generate system.json --out out
     .venv/bin/python -m pytest tests
 
-CAN IDs follow `../FSAE Sensor Hub CAN Tables.xlsx`. Output: `out/hub_<id>/sensor_config_generated.c`, `out/head/{head_config.h,head_config_generated.c,head_decode.c}`, `out/dash/channels.json`.
+CAN IDs follow `../FSAE Sensor Hub CAN Tables.xlsx`. Output: `out/hub_<id>/{hub_<id>.blob,hub_default_blob.c}` (hub config blob and its
+compiled-in default), `out/head/{head_default.blob,head_default_blob.c}`, `out/dash/channels.json`.
 
-Head integration: call `Head_Init()` once, then `Head_ProcessFrame(bus, id, extended, data, len, now_ms)` for every received frame (bus = `HEAD_BUS_<ID>`). Latest values are in `g_head_values[slot]` (`HEAD_CHANNELS[slot].value_type`). Set each FDCAN's `StdFiltersNbr`/`ExtFiltersNbr` to the `HEAD_BUS_<ID>_STD/EXT_FILTERS` values and load `HEAD_BUSES[].std_filters/ext_filters`.
+`generate system.json --deploy` copies the head default into `../Common/Src`, `--deploy-hub <id>` copies that hub's default into
+`../../SensorHubV1/Core/Src`. Both boards load their config at runtime (head: blob over UART; hub: blob over the head's CAN relay or the hub's
+UART, stored in the hub's flash); the compiled-in defaults only matter for a fresh board. Details: `docs/protocol.md` and `docs/firmware.md`.
