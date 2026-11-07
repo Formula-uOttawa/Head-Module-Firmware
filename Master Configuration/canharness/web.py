@@ -40,7 +40,10 @@ def create_app(project_path: Path, out_dir: Path, transport_factory=None) -> Fas
         except (TimeoutError, ConnectionError) as e:
             raise HTTPException(504, detail=str(e) or "device did not answer")
         except OSError as e:
-            raise HTTPException(502, detail=f"serial error: {e}")
+            # the USB serial device went away and came back (board reset, reflash, cable): the open handle is dead, so reopen it
+            if dev.recover():
+                raise HTTPException(502, detail=f"serial link was lost ({e}) and has been reopened: repeat the action")
+            raise HTTPException(502, detail=f"serial error: {e} (the port is gone: replug the board, then connect again)")
         except HTTPException:
             raise
         except Exception as e:  # a bug or an unexpected reply: say what, instead of a bare "Internal Server Error"

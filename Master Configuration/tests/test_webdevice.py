@@ -107,3 +107,26 @@ def test_diagnostics_messages(tmp_path):
     with TestClient(create_app(proj, tmp_path / "out", transport_factory=lambda p, b: Boom())) as c:
         r = c.post("/api/device/connect", json={"port": "x"})
         assert r.status_code == 500 and "RuntimeError: kaboom" in r.json()["detail"]
+
+
+def test_serial_io_error_reopens_the_port(tmp_path):
+    """A dead serial handle (USB device re-enumerated: Errno 6) is reopened by the app instead of failing every later request."""
+    exe = build_sim(tmp_path, "proto_sim", ["head_cfg.c", "hframe.c", "hproto.c"])
+    proj = tmp_path / "p.json"
+    sample_project().save(proj)
+    opened = []
+
+    def factory(port, baud):
+        t = ProcTransport(exe)
+        opened.append(t)
+        return t
+
+    with TestClient(create_app(proj, tmp_path / "out", transport_factory=factory)) as c:
+        assert c.post("/api/device/connect", json={"port": "sim"}).status_code == 200
+
+        def dead(data): raise OSError(6, "Device not configured")
+        opened[0].write = dead
+        r = c.get("/api/device/info")
+        assert r.status_code == 502 and "reopened" in r.json()["detail"] and len(opened) == 2
+        assert c.get("/api/device/info").status_code == 200   # the next request works on the new handle
+        c.post("/api/device/disconnect")

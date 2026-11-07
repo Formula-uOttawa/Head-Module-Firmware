@@ -30,11 +30,9 @@ def generate_dash(project: Project) -> str:
             "fault_high": ch.fault_high,
             "calibration": {"x": ch.cal_x, "y": ch.cal_y} if ch.cal_x else None,
             # what the head distributes: CAN-receive channels are scaled floats, analog hub channels are float32 VOLTS at the sensor pin
-            # (resistive inputs: OHMS = volts / excitation current); calibration x values are in that base unit; digital hub channels are integers
+            # (calibration x values are volts); digital hub channels are integers
             "value_type": "f32" if analog or ch.source == "can_rx" else ("i32" if ch.signed else "u32"),
-            **({"base_unit": hwmap.base_unit(ch.sensor_type.value),
-                "volts_per_count": hwmap.volts_per_count(ch.sensor_type.value, project.settings.afe_vref_v),
-                "excitation_current_a": hwmap.excitation_current_a(ch.sensor_type.value) or None} if analog else {}),
+            **({"volts_per_count": hwmap.volts_per_count(ch.sensor_type.value, project.settings.afe_vref_v)} if analog else {}),
             "raw": {"bytes": ch.raw_bytes, "signed": ch.signed, "endian": "little",
                     # analog hub channels without a fresh AFE sample are sent as the minimum 24-bit code ("no data")
                     **({"no_data_value": -8388608} if ch.source == "hub" and ch.sensor_type.value != "digital" else {})},

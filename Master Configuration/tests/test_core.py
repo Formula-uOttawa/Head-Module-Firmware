@@ -58,17 +58,14 @@ def test_mixed_sizes_pack_tightly():
     assert not errs and f.payload_bytes == 12  # 4 + 4 + 2 + 1 + 1, no gaps
 
 
-def test_explicit_overlap_reported():
-    p = proj(ch(1, 1, frame_idx=0, byte_offset=4), ch(2, 2, frame_idx=0, byte_offset=5))
-    _, errs = pack(p)
-    assert errs
-
-
-def test_reserved_bytes_enforced():
-    _, errs = pack(proj(ch(1, 1, frame_idx=0, byte_offset=2)))  # inside the timestamp
-    assert errs
-    _, errs = pack(proj(ch(1, 1, frame_idx=0, byte_offset=63)))  # 2 bytes past the end
-    assert errs
+def test_packing_keeps_to_the_data_area_and_never_overlaps():
+    p = proj(*[ch(i, i, raw_bytes=4) for i in range(1, 40)])
+    frames, errs = pack(p)
+    assert not errs
+    for f in frames:
+        spans = sorted((x.offset, x.offset + x.length) for x in f.placements)
+        assert spans[0][0] >= p.settings.data_start and spans[-1][1] <= p.settings.data_end
+        assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
 
 
 def test_validation_rules():
@@ -145,11 +142,9 @@ def test_connector_pins():
     assert "signal (-)" not in msgs and "pin 3 " not in msgs
 
 
-def test_analog_base_units_volts_and_ohms():
-    """Active / thermocouple inputs are volts, resistive inputs ohms (R = V / 1 mA IDAC); the code scale follows the reference."""
+def test_analog_values_are_volts():
+    """Every analog hub input is volts (resistance comes from the calibration); the code scale follows the reference."""
     from canharness import hwmap
-    assert hwmap.excitation_current_a("resistive") == pytest.approx(1e-3) and hwmap.excitation_current_a("active") == 0
-    assert [hwmap.base_unit(t) for t in ("resistive", "active", "thermocouple")] == ["ohm", "V", "V"]
-    assert hwmap.counts_to_base("active", 5.0) == pytest.approx(5.0 / 2**23)
-    assert hwmap.counts_to_base("resistive", 5.0) == pytest.approx(5.0 / 2**23 / 1e-3)        # 1 kohm per volt
-    assert hwmap.counts_to_base("thermocouple", 5.0) == pytest.approx(2.5 / 128 / 2**23)     # internal reference, gain 128
+    assert hwmap.volts_per_count("active", 5.0) == pytest.approx(5.0 / 2**23)
+    assert hwmap.volts_per_count("resistive", 5.0) == pytest.approx(5.0 / 2**23)
+    assert hwmap.volts_per_count("thermocouple", 5.0) == pytest.approx(2.5 / 128 / 2**23)     # internal reference, gain 128

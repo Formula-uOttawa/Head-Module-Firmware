@@ -236,6 +236,25 @@ static void test_decode(void)
     live.rx_seen[2] = 1; live.last_rx_ms[2] = 0xFFFFFFFFu;
     HeadDecode_UpdateStale(&cfg, &live, 0xFFFFFFFFu);
     CHECK(!live.stale[2], "timestamp 0xFFFFFFFF is not a sentinel any more");
+
+    /* reception rate: frames per window -> 0.1 Hz, refreshed only when a window closes */
+    fresh();
+    cfg.channel_count = 2;
+    live.rate_window_ms = 5000;
+    live.rx_count[0] = 400;  /* 200 Hz over 2 s */
+    live.rx_count[1] = 21;   /* 10 Hz, one extra frame in the window */
+    HeadDecode_UpdateRates(&live, 5000u + HEAD_RATE_WINDOW_MS - 1u);
+    CHECK(live.rate_x10[0] == 0 && live.rate_window_ms == 5000, "rate window not closed yet: nothing changes");
+    HeadDecode_UpdateRates(&live, 5000u + HEAD_RATE_WINDOW_MS);
+    CHECK(live.rate_x10[0] == 2000 && live.rate_x10[1] == 105 && live.rate_x10[2] == 0, "rates in 0.1 Hz");
+    live.rx_count[0] += 200;
+    HeadDecode_UpdateRates(&live, 5000u + 2u * HEAD_RATE_WINDOW_MS);
+    CHECK(live.rate_x10[0] == 1000 && live.rate_x10[1] == 0, "next window counts only its own frames; a silent channel drops to 0");
+    live.rate_window_ms = 0xFFFFF000u;
+    live.rx_count[0] = 0xFFFFFFF0u; live.rate_base[0] = 0xFFFFFFF0u;
+    live.rx_count[0] += 40;  /* counter wraps inside the window */
+    HeadDecode_UpdateRates(&live, 0xFFFFF000u + HEAD_RATE_WINDOW_MS); /* clock wraps too */
+    CHECK(live.rate_x10[0] == 200, "rate across counter and clock wrap");
 }
 
 /* ---- receive ring ---------------------------------------------------------------------------------------------------- */
@@ -296,7 +315,7 @@ static uint8_t o_read(void *c, uint8_t s, uint32_t off, uint8_t *dst, uint16_t m
     return 0;
 }
 static uint8_t o_clear(void *c, uint8_t f) { (void)c; (void)f; return 0; }
-static uint16_t o_live(void *c, uint16_t first, uint16_t count, uint8_t *dst) { (void)c; (void)first; ops_live_count = count; memset(dst, 0, 5u * count); return count; }
+static uint16_t o_live(void *c, uint16_t first, uint16_t count, uint8_t *dst) { (void)c; (void)first; ops_live_count = count; memset(dst, 0, HPROTO_LIVE_ENTRY * count); return count; }
 static uint8_t o_sniff(void *c, uint8_t b, uint8_t e) { (void)c; (void)b; (void)e; return 0; }
 static void o_reboot(void *c) { (void)c; }
 static const HprotoOps_t ops = { o_info, o_commit, o_read, o_clear, o_live, NULL, o_sniff, NULL, o_reboot };
@@ -378,12 +397,12 @@ static void test_hproto(void)
     CHECK(ops_read_max == 54 && n == 2u + 8u + 54u, "CFG_READ clamped to the response buffer");
     n = call(&p, HMSG_CFG_READ, pl, 7, resp, sizeof resp);
     CHECK(ops_read_max == HPROTO_READ_MAX && n == 2u + 8u + HPROTO_READ_MAX, "CFG_READ full size with a 256 byte buffer");
-    HeadPutLe16(pl, 0); HeadPutLe16(pl + 2, 48);
+    HeadPutLe16(pl, 0); HeadPutLe16(pl + 2, 32);
     n = call(&p, HMSG_LIVE_GET, pl, 4, resp, 64);
-    CHECK(ops_live_count == 11 && n == 2u + 4u + 55u, "LIVE_GET clamped to the response buffer");
+    CHECK(ops_live_count == 8 && n == 2u + 4u + 56u, "LIVE_GET clamped to the response buffer");
     n = call(&p, HMSG_LIVE_GET, pl, 4, resp, sizeof resp);
-    CHECK(ops_live_count == 48 && n == 2u + 4u + 240u, "LIVE_GET 48 entries");
-    HeadPutLe16(pl + 2, 49);
+    CHECK(ops_live_count == 32 && n == 2u + 4u + 224u, "LIVE_GET 32 entries");
+    HeadPutLe16(pl + 2, 33);
     CHECK(call(&p, HMSG_LIVE_GET, pl, 4, resp, sizeof resp) == 4 && resp[3] == HERR_RANGE, "LIVE_GET above the limit");
     CHECK(call(&p, HMSG_INFO, pl, 0, resp, 63) == 0, "response buffer below the minimum is refused");
 }

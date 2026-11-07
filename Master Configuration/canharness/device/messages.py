@@ -124,9 +124,13 @@ def parse_info(p: bytes) -> dict:
 
 def parse_live(p: bytes) -> dict:
     first, count = struct.unpack_from("<HH", p)
-    vals = [struct.unpack_from("<IB", p, 4 + 5 * i) for i in range(count)]
-    return {"first": first, "raw": [v for v, _ in vals], "stale": [bool(f & 1) for _, f in vals],
-            "no_sensor": [bool(f & 2) for _, f in vals]}
+    size = 7 if count and len(p) >= 4 + 7 * count else 5  # head entries carry a reception rate (u16, 0.1 Hz); hub entries do not
+    vals = [struct.unpack_from("<IB", p, 4 + size * i) for i in range(count)]
+    out = {"first": first, "raw": [v for v, _ in vals], "stale": [bool(f & 1) for _, f in vals],
+           "no_sensor": [bool(f & 2) for _, f in vals]}
+    if size == 7:
+        out["rate_hz"] = [struct.unpack_from("<H", p, 4 + 7 * i + 5)[0] / 10 for i in range(count)]
+    return out
 
 
 def parse_stats(p: bytes) -> dict:

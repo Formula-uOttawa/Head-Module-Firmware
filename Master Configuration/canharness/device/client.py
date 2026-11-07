@@ -147,7 +147,7 @@ class DeviceClient:
     def clear_config(self, revert: bool = True) -> None:
         self.request(m.CFG_CLEAR, bytes([1 if revert else 0]), timeout=20.0)
 
-    def live(self, first: int = 0, count: int = 48) -> dict:
+    def live(self, first: int = 0, count: int = 32) -> dict:
         return m.parse_live(self.request(m.LIVE_GET, struct.pack("<HH", first, count)))
 
     def stats(self) -> dict:

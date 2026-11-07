@@ -15,7 +15,14 @@ typedef struct {
     volatile uint32_t last_rx_ms[HEAD_MAX_CHANNELS]; /* valid only while rx_seen[] is set */
     volatile uint8_t rx_seen[HEAD_MAX_CHANNELS];     /* 1 once the channel has been received since the config was applied */
     volatile uint8_t stale[HEAD_MAX_CHANNELS];       /* 1 = never received or timed out (see HeadDecode_UpdateStale) */
+    volatile uint32_t rx_count[HEAD_MAX_CHANNELS];   /* frames that carried a fresh sample of the channel (wraps) */
+    volatile uint16_t rate_x10[HEAD_MAX_CHANNELS];   /* measured reception rate in 0.1 Hz (HeadDecode_UpdateRates) */
+    uint32_t rate_base[HEAD_MAX_CHANNELS];           /* rx_count at the start of the current rate window (CM4 private) */
+    uint32_t rate_window_ms;                         /* start of the current rate window (CM4 private) */
 } HeadLive_t;
+
+/* Length of the rate measurement window: a 10 Hz channel gives 20 frames per window, so the rate resolves to 0.5 Hz. */
+#define HEAD_RATE_WINDOW_MS 2000u
 
 typedef struct {
     volatile uint32_t rx_frames;  /* every frame passed in */
@@ -48,6 +55,10 @@ bool HeadDecode_Process(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *
 /* Refresh live->stale[] from rx_seen/last_rx_ms and the per-channel timeouts (timeout_ms == 0: never stale once seen).
    Uses a signed time difference, so a frame stamped slightly after `now_ms` is fresh. Call periodically (e.g. every 10 ms). */
 void HeadDecode_UpdateStale(const HeadConfig_t *cfg, HeadLive_t *live, uint32_t now_ms);
+
+/* Close the rate window once HEAD_RATE_WINDOW_MS have passed: rate_x10[] = frames received in the window / window length.
+   Call with the same period as UpdateStale; between window ends the rates stay unchanged. Channels never received read 0. */
+void HeadDecode_UpdateRates(HeadLive_t *live, uint32_t now_ms);
 
 /* Exposed for tests: Intel (LSB start) or Motorola/DBC (MSB start, sawtooth) bit-field extraction. */
 uint32_t HeadDecode_ExtractBits(const uint8_t *d, uint8_t len, uint16_t start, uint8_t n, bool big_endian);

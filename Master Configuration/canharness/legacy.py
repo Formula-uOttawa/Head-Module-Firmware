@@ -19,8 +19,7 @@ def _placement(sensor_type: SensorType, ct: dict) -> dict:
     """Legacy files stored 2-byte unsigned analog samples at fixed offsets. The hub now sends the raw 24-bit signed
     ADC code (3 bytes), so analog channels are upgraded and re-packed automatically; digital channels keep their size."""
     if sensor_type == SensorType.DIGITAL:
-        return {"raw_bytes": int(ct["byte_length"]), "frame_idx": int(ct.get("frame_idx", ct.get("can_frame", 0))),
-                "byte_offset": int(ct["byte_offset"])}
+        return {"raw_bytes": int(ct["byte_length"])}
     return {"raw_bytes": 3, "signed": True}
 
 

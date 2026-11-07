@@ -36,27 +36,6 @@ def volts_per_count(sens_type: str, vref: float) -> float:
     return ref / AFE_GAIN[sens_type] / ADC_FULL_SCALE_CODE
 
 
-# IDAC current of each IMAG code (IDACMAG register, datasheet table); codes 0 and 10..15 = off
-IDAC_UA = {1: 10, 2: 50, 3: 100, 4: 250, 5: 500, 6: 750, 7: 1000, 8: 1500, 9: 2000}
-
-
-def excitation_current_a(sens_type: str) -> float:
-    """Current the hub drives into the input pin of this sensor type, in amperes (0 = none): the resistive recipe's IDAC, 1 mA."""
-    return IDAC_UA.get(idacmag(sens_type) & 0x0F, 0) * 1e-6 if sens_type == "resistive" else 0.0
-
-
-def base_unit(sens_type: str) -> str:
-    """Unit the head distributes for an analog hub channel: ohms for excitation-current (resistive) inputs, volts otherwise."""
-    return "ohm" if excitation_current_a(sens_type) > 0 else "V"
-
-
-def counts_to_base(sens_type: str, vref: float) -> float:
-    """Multiplier from the raw 24 bit code to the head's value: volts per code, divided by the excitation current for ohms (R = V / I)."""
-    vpc = volts_per_count(sens_type, vref)
-    i = excitation_current_a(sens_type)
-    return vpc / i if i > 0 else vpc
-
-
 def resolve_pin(pin: int) -> tuple[int, int]:
     """Return (afe, afe_pin). afe 1 = AFE A, 2 = AFE B, 3 = digital input."""
     if pin in TC_NEG_PINS:

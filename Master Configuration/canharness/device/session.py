@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import struct
 import threading
+import time
 from collections import deque
 from typing import Callable, Optional
 
@@ -31,6 +32,7 @@ class DeviceSession:
         self.lock = threading.RLock()
         self.client: Optional[DeviceClient] = None
         self.port: Optional[str] = None
+        self.baud = 115200
         self.sniff_frames: deque = deque(maxlen=1000)
         self.sniff_seq = 0
         self.text: deque = deque(maxlen=500)  # unsolicited / ASCII lines from the device
@@ -50,8 +52,27 @@ class DeviceSession:
             except Exception:
                 self.disconnect()
                 raise
-            self.port = port
+            self.port, self.baud = port, baud
             return info
+
+    def recover(self, wait_s: float = 4.0) -> bool:
+        """Reopen the serial port after an I/O error (macOS "Device not configured": the USB device re-enumerated, so the open
+        handle is dead for good). Retries while the port reappears; True when the board answered again."""
+        with self.lock:
+            port, baud = self.port, self.baud
+            if not port:
+                return False
+            self.disconnect()
+            deadline = time.monotonic() + wait_s
+            while True:
+                try:
+                    self.connect(port, baud)
+                    return True
+                except Exception:
+                    self.disconnect()
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(0.5)
 
     def disconnect(self) -> None:
         with self.lock:
@@ -213,14 +234,14 @@ class DeviceSession:
             chans = self._active_channels(info)
             rows, slot = [], 0
             while slot < len(chans):
-                r = c.live(slot, min(48, len(chans) - slot))
+                r = c.live(slot, min(32, len(chans) - slot))
                 if not r["raw"]:
                     break
-                for raw, stale in zip(r["raw"], r["stale"]):
+                for raw, stale, rate in zip(r["raw"], r["stale"], r.get("rate_hz") or [None] * len(r["raw"])):
                     cid, vtype = chans[slot][0], chans[slot][1]
                     value = (struct.unpack("<f", struct.pack("<I", raw))[0] if vtype == 2
                              else struct.unpack("<i", struct.pack("<I", raw))[0] if vtype == 1 else raw)
-                    rows.append({"slot": slot, "channel_id": cid, "value": value, "stale": stale})
+                    rows.append({"slot": slot, "channel_id": cid, "value": value, "stale": stale, "rate_hz": rate})
                     slot += 1
             return {"device_type": "head", "hash": info["active_hash"], "channels": rows}
 

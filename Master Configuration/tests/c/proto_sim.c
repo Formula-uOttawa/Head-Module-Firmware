@@ -85,8 +85,10 @@ static uint16_t live_get(void *c, uint16_t first, uint16_t count, uint8_t *dst)
     (void)c;
     for (uint16_t i = 0; i < count; i++) {
         uint32_t v = (uint32_t)(first + i) * 1000u + 7u;
-        for (int b = 0; b < 4; b++) dst[5 * i + b] = (uint8_t)(v >> (8 * b));
-        dst[5 * i + 4] = (uint8_t)((first + i) & 1);
+        for (int b = 0; b < 4; b++) dst[7 * i + b] = (uint8_t)(v >> (8 * b));
+        dst[7 * i + 4] = (uint8_t)((first + i) & 1);
+        dst[7 * i + 5] = (uint8_t)(((first + i) * 10u + 5u) & 0xFF); /* rate x10 */
+        dst[7 * i + 6] = 0;
     }
     return count;
 }

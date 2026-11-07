@@ -56,9 +56,6 @@ class Channel(BaseModel):
     cal_y: list[float] = Field(default_factory=list)
     raw_bytes: int = 2
     signed: bool = False
-    # explicit frame placement; None = auto-pack
-    frame_idx: Optional[int] = None
-    byte_offset: Optional[int] = None
     enabled: bool = True
     notes: str = ""
 

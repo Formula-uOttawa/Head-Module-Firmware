@@ -400,8 +400,10 @@ static uint16_t op_live_get(void *ctx, uint16_t first, uint16_t count, uint8_t *
     uint16_t w = 0;
     for (; w < count && (uint32_t)first + w < channels; w++) {
         uint32_t slot = (uint32_t)first + w;
-        HeadPutLe32(dst + 5u * w, SH->live.values[slot].u);
-        dst[5u * w + 4u] = SH->live.stale[slot] ? 1u : 0u;
+        uint8_t *e = dst + HPROTO_LIVE_ENTRY * w;
+        HeadPutLe32(e, SH->live.values[slot].u);
+        e[4] = SH->live.stale[slot] ? 1u : 0u;
+        HeadPutLe16(e + 5, SH->live.rate_x10[slot]);
     }
     return w;
 }

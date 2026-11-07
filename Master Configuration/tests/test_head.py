@@ -137,7 +137,7 @@ def test_firmware_decode_matches_reference(tmp_path):
                     raw -= 1 << (8 * pl.length)
                 if pl.channel.sensor_type != SensorType.DIGITAL:  # analog hub channel: float volts, code -8388608 = "no sample" (not stored)
                     if raw != -8388608:
-                        vals[slot[pl.channel.channel_id]] = ("f", raw * hwmap.counts_to_base(pl.channel.sensor_type.value, p.settings.afe_vref_v))
+                        vals[slot[pl.channel.channel_id]] = ("f", raw * hwmap.volts_per_count(pl.channel.sensor_type.value, p.settings.afe_vref_v))
                 else:
                     vals[slot[pl.channel.channel_id]] = ("i" if pl.channel.signed else "u", raw)
         else:

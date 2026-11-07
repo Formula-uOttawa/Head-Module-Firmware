@@ -16,7 +16,7 @@
 /* every reply must fit the smallest response buffer and the framing's payload limit */
 _Static_assert(HPROTO_MIN_RESP >= 2u + HPROTO_INFO_BASE_LEN, "INFO reply must fit the minimum response buffer");
 _Static_assert(8u + HPROTO_READ_MAX <= HFRAME_MAX_PAYLOAD, "CFG_READ reply must fit one frame");
-_Static_assert(4u + 5u * HPROTO_LIVE_MAX <= HFRAME_MAX_PAYLOAD, "LIVE_GET reply must fit one frame");
+_Static_assert(4u + HPROTO_LIVE_ENTRY * HPROTO_LIVE_MAX <= HFRAME_MAX_PAYLOAD, "LIVE_GET reply must fit one frame");
 _Static_assert(HPROTO_CHUNK_MAX + 4u <= HFRAME_MAX_PAYLOAD, "CFG_CHUNK request must fit one frame");
 
 void Hproto_Init(Hproto_t *p, const HprotoOps_t *ops, void *ctx, uint8_t *stage, uint32_t stage_cap)
@@ -224,12 +224,12 @@ size_t Hproto_Handle(Hproto_t *p, const uint8_t *msg, size_t len, uint8_t *resp,
         uint16_t first = rd16(pl), count = rd16(pl + 2);
         if (count > HPROTO_LIVE_MAX)
             return error(type, seq, HERR_RANGE, resp);
-        if (count > (cap - 6u) / 5u) /* 2 header + 4 (first, count) + 5 per entry: a small buffer returns fewer entries */
-            count = (uint16_t)((cap - 6u) / 5u);
+        if (count > (cap - 6u) / HPROTO_LIVE_ENTRY) /* 2 header + 4 (first, count) + 7 per entry: a small buffer returns fewer entries */
+            count = (uint16_t)((cap - 6u) / HPROTO_LIVE_ENTRY);
         uint16_t w = ops->live_get(p->ctx, first, count, out + 4);
         wr16(out, first);
         wr16(out + 2, w);
-        return reply(type, seq, resp, 4u + 5u * w);
+        return reply(type, seq, resp, 4u + HPROTO_LIVE_ENTRY * w);
     }
     case HMSG_STATS_GET: {
         uint16_t w = ops->stats_get ? ops->stats_get(p->ctx, out, (uint16_t)(cap - 2)) : 0;

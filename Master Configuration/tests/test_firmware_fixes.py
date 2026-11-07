@@ -407,7 +407,7 @@ def test_console_text_filter_and_hex(text_exe):
 # ---- AFE volts -----------------------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("vref", [5.0, 3.3])
-def test_analog_hub_channel_is_float_base_unit_and_no_data_code_goes_stale(tmp_path, vref):
+def test_analog_hub_channel_is_float_volts_and_no_data_code_goes_stale(tmp_path, vref):
     """Analog hub channels are scaled to float32 volts in the head (code / 2^23 * Vref); the hub's "no sample" code -8388608 is not stored."""
     from canharness.packing import pack
     p = sample_project()
@@ -428,11 +428,10 @@ def test_analog_hub_channel_is_float_base_unit_and_no_data_code_goes_stale(tmp_p
     out = subprocess.run([str(exe), str(tmp_path / "cfg.blob")], input="\n".join(lines) + "\n", capture_output=True, text=True).stdout.splitlines()[1:]
     cell = lambda i: out[i].split()[1 + slot]
     f = lambda i: struct.unpack("<f", int(cell(i).split(":")[0], 16).to_bytes(4, "little"))[0]
-    unit = 1.0 / hwmap.excitation_current_a(p.channels[0].sensor_type.value) if p.channels[0].sensor_type.value == "resistive" else 1.0  # ohms per volt
-    assert f(0) == pytest.approx(0.5 * vref * unit, rel=1e-6)    # half scale
-    assert f(1) == pytest.approx(-0.25 * vref * unit, rel=1e-6)  # negative code, sign extended from 3 bytes
+    assert f(0) == pytest.approx(0.5 * vref, rel=1e-6)    # half scale
+    assert f(1) == pytest.approx(-0.25 * vref, rel=1e-6)  # negative code, sign extended from 3 bytes
     assert f(2) == f(1) and cell(2).endswith(":0")               # "no sample": value and freshness unchanged here ...
-    assert f(3) == pytest.approx(8388607 / 2**23 * vref * unit, rel=1e-6)
+    assert f(3) == pytest.approx(8388607 / 2**23 * vref, rel=1e-6)
 
 
 def _blob_with_route(mutator):

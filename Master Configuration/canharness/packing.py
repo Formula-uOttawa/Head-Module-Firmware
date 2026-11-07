@@ -44,7 +44,7 @@ def hub_channels(project: Project) -> list[Channel]:
 
 
 def pack(project: Project) -> tuple[list[PackedFrame], list[str]]:
-    """Return (frames, errors). Explicit placements are honoured first, the rest are first-fit."""
+    """Return (frames, errors). Channels are first-fit packed, largest first."""
     s = project.settings
     errors: list[str] = []
     frames: dict[tuple[int, int, int], PackedFrame] = {}
@@ -72,18 +72,7 @@ def pack(project: Project) -> tuple[list[PackedFrame], list[str]]:
     for ch in chans:
         if ch.sensor_type == SensorType.CAN:
             continue
-        if ch.frame_idx is None or ch.byte_offset is None:
-            auto.append(ch)
-            continue
-        key = (ch.hub, ch.sample_rate_hz, ch.frame_idx)
-        frame(*key)
-        if not fits(key, ch.byte_offset, ch.raw_bytes):
-            errors.append(
-                f"[{ch.short_name}]: bytes {ch.byte_offset}-{ch.byte_offset + ch.raw_bytes - 1} in frame "
-                f"{ch.frame_idx} are outside data area {s.data_start}-{s.data_end - 1} or overlap another signal"
-            )
-            continue
-        put(ch, ch.frame_idx, ch.byte_offset)
+        auto.append(ch)
 
     auto.sort(key=lambda c: -c.raw_bytes)  # largest first keeps natural alignment gap-free
     for ch in auto:

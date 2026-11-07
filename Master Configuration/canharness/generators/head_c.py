@@ -66,8 +66,8 @@ def head_tables(project: Project) -> dict[str, list[tuple]]:
         hub_frames.append((f.id_base, HUB_FRAME_MASK, f.hub, f.payload_bytes, len(routes), len(f.placements), 0))
         for p in f.placements:
             ch = p.channel
-            if ch.source == "hub" and ch.sensor_type != SensorType.DIGITAL:  # AFE code -> float volts (ohms for resistive inputs); code -8388608 = no sample
-                routes.append((slot[ch.channel_id], p.offset, p.length, int(ch.signed), 3, hwmap.counts_to_base(ch.sensor_type.value, project.settings.afe_vref_v), 0.0))
+            if ch.source == "hub" and ch.sensor_type != SensorType.DIGITAL:  # AFE code -> float volts; code -8388608 = no sample
+                routes.append((slot[ch.channel_id], p.offset, p.length, int(ch.signed), 3, hwmap.volts_per_count(ch.sensor_type.value, project.settings.afe_vref_v), 0.0))
             else:
                 routes.append((slot[ch.channel_id], p.offset, p.length, int(ch.signed), 0, 1.0, 0.0))
 

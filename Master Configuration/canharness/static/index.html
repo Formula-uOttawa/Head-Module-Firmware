@@ -211,7 +211,7 @@ function newChannel(over = {}) {
     channel_id: id, name: "New channel", short_name: `CH${id}`, source: "hub", hub, sensor_type: "active", sample_rate_hz: 100,
     units: "", scaling: { gain: 1, offset: 0 }, fault_low: null, fault_high: null, pin_sig_pos: null, pin_sig_neg: null,
     pin_5v: null, pin_gnd: null, pin_gnd_connector: 2, cal_x: [], cal_y: [], raw_bytes: 3, signed: true,  // analog hub channels carry the raw 24-bit signed ADC code
-    frame_idx: null, byte_offset: null, enabled: true, notes: "",
+    enabled: true, notes: "",
   }, over);
 }
 function freePin(hub, type) {
@@ -285,8 +285,6 @@ function channelRow(ch) {
       h("option", { value: "" }, "—"),
       [[1, [25, 30, 31, 32, 33, 34]], [2, Array.from({ length: 17 }, (_, i) => i + 18)]].flatMap(([c, ps]) => ps.map(p => h("option", { value: `${c}:${p}` }, `C${c}-${p}`))))),
     h("td", {}, h("select", { value: ch.raw_bytes, disabled: !isHub, onchange: e => { ch.raw_bytes = +e.target.value; changed(false); } }, [1, 2, 3, 4].map(n => h("option", { value: n }, n)))),
-    h("td", {}, cellInput(ch, "frame_idx", { int: true, cls: "w-s", disabled: !isHub })),
-    h("td", {}, cellInput(ch, "byte_offset", { int: true, cls: "w-s", disabled: !isHub })),
     h("td", {}, cellInput(ch, "fault_low")),
     h("td", {}, cellInput(ch, "fault_high")),
     h("td", {},
@@ -296,13 +294,12 @@ function channelRow(ch) {
         if (ch.source === "can_rx") { alert("Duplicate CAN receive signals from the CAN receive tab"); return; }
         const id = Math.max(...P.channels.map(x => x.channel_id)) + 1;
         c.channel_id = id; c.short_name = `${ch.short_name}_copy${id}`; c.name = `${ch.name} (copy)`; c.pin_sig_pos = freePin(ch.hub, ch.sensor_type === "digital" ? "digital" : "analog");
-        c.frame_idx = null; c.byte_offset = null;
         P.channels.push(c); changed(true); } }, "⧉"), " ",
       h("button", { class: "btn icon", title: "Delete", onclick: () => { if (confirm(`Delete channel "${ch.name}"?`)) { P.channels = P.channels.filter(x => x !== ch); changed(true); } } }, "✕")));
   return tr;
 }
 function viewChannels() {
-  const cols = ["", "On", "ID", "Name", "Short name", "Hub", "Type", "Rate", "Units", "Sig +", "Sig −", "5V", "GND", "Bytes", "Frame", "Offset", "Fault low", "Fault high", ""];
+  const cols = ["", "On", "ID", "Name", "Short name", "Hub", "Type", "Rate", "Units", "Sig +", "Sig −", "5V", "GND", "Bytes", "Fault low", "Fault high", ""];
   const rows = P.channels.filter(c => (hubFilter === "all" || String(c.hub) === hubFilter)
     && (!search || (c.name + c.short_name).toLowerCase().includes(search.toLowerCase())));
   return h("div", {},
@@ -315,7 +312,7 @@ function viewChannels() {
       h("button", { class: "btn primary", onclick: () => {
         const c = newChannel(); c.pin_sig_pos = freePin(c.hub, "analog"); P.channels.push(c); changed(true); } }, "+ Add channel")),
     h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, cols.map(c => h("th", {}, c)))), h("tbody", {}, rows.map(channelRow)))),
-    h("p", { class: "muted" }, "Frame / Offset are optional: leave empty to auto-pack as tightly as possible (up to 64 B per frame). Thermocouples: AFE B only, Sig − is the shared TC− input (pins 20, 26–29)."),
+    h("p", { class: "muted" }, "Channels are packed into frames automatically, as tightly as possible (up to 64 B per frame). Thermocouples: AFE B only, Sig − is the shared TC− input (pins 20, 26–29)."),
     issueBox());
 }
 
@@ -854,16 +851,15 @@ function devInfoBody() {
 }
 // ---- live value display: fixed decimals and fixed column widths, so the table never reflows while values change
 const fixed = (v, dp) => Number.isFinite(v) ? v.toFixed(dp) : "—";
-const excitation = ch => ((HW.afe && HW.afe.excitation_a) || { resistive: 0.001 })[ch.sensor_type] || 0; // IDAC current into the input, A (0 = none)
 const isAnalogHub = ch => !!ch && ch.source === "hub" && ch.sensor_type !== "digital";
-// the head's value of an analog hub channel: ohms for resistive (excitation current) inputs, volts otherwise
-const baseOfCode = (ch, code) => {
-  const vpc = (ch.sensor_type === "thermocouple" ? 2.5 : (P.settings.afe_vref_v || 5)) / ((HW.afe && HW.afe.gain[ch.sensor_type]) || 1) / 8388608;
-  return excitation(ch) > 0 ? vpc / excitation(ch) : vpc;
-};
+// the head's value of an analog hub channel is volts at the sensor pin
+// the calibration (curve or non-default scaling) turns an analog hub channel's volts into its configured units; other channels already carry their units
+const hasCal = ch => (ch.cal_x.length >= 2 && ch.cal_x.length === ch.cal_y.length) || ch.scaling.gain !== 1 || ch.scaling.offset !== 0;
+const calApplies = ch => !isAnalogHub(ch) || hasCal(ch);
+const calUnit = ch => calApplies(ch) ? (ch.units || "") : "";
+const calCell = (ch, base, stale) => stale || base == null || !calApplies(ch) ? "—" : fixed(evalCal(ch, base), 3);
 function valueCell(ch, base, stale) {
   if (stale || base == null) return h("span", { class: "muted" }, "—");
-  if (isAnalogHub(ch) && excitation(ch) > 0) return [fixed(base, 1) + " Ω ", h("span", { class: "muted" }, `(${fixed(base * excitation(ch), 4)} V)`)];
   if (isAnalogHub(ch)) return fixed(base, ch.sensor_type === "thermocouple" ? 6 : 4) + " V";
   return Number.isInteger(base) ? String(base) : fixed(base, 4);
 }
@@ -872,24 +868,39 @@ const liveTable = (cols, rows) => h("div", { class: "tablewrap" }, h("table", { 
 function devHubLiveBody() {
   const hubId = dev.info ? dev.info.hub_id : null;
   const byPin = new Map(P.channels.filter(c => c.enabled && c.source === "hub" && (hubId == null || c.hub === hubId) && c.pin_sig_pos != null).map(c => [c.pin_sig_pos, c]));
-  return liveTable([["Pin", 50], ["Input", 70], ["Channel", 210], ["Raw", 100], ["Value", 250], ["Calibrated", 120], ["Units", 80], ["Status", 80]], dev.live.slots.map(r => {
+  return liveTable([["Pin", 50], ["Input", 70], ["Channel", 210], ["Raw", 100], ["Status", 80]], dev.live.slots.map(r => {
     const pin = r.slot + 1, ch = byPin.get(pin);
     const hp = HW.conn1.find(x => x.pin === pin), analog = hp && hp.afe, val = analog ? (r.value | 0) : r.value;  // analog = signed 24-bit code
-    const base = ch ? (isAnalogHub(ch) ? baseOfCode(ch, val) * val : val) : null;
     return h("tr", { style: ch ? "" : "opacity:.45" }, h("td", {}, pin), h("td", { class: "muted" }, !hp ? "" : hp.afe ? `AFE ${hp.afe}${hp.index}` : hp.role === "digital" ? `DIN${hp.index}` : ""),
       h("td", {}, ch ? ch.name : "—"), h("td", { class: "num" }, val),
-      h("td", { class: "num" }, ch ? valueCell(ch, base, r.stale) : ""),
-      h("td", { class: "num" }, ch && !r.stale ? fixed(evalCal(ch, base), 3) : "—"), h("td", {}, ch ? ch.units : ""),
       h("td", {}, r.no_sensor ? "" : r.stale ? h("span", { class: "chip warn" }, "stale") : h("span", { class: "chip ok" }, "live")));
   }));
+}
+// measured reception rate (frames carrying the channel per second) next to the assigned rate; flagged when well below it
+function rateCell(ch, r) {
+  if (r.rate_hz == null) return "";
+  const want = ch ? ch.sample_rate_hz : 0, low = want > 0 && r.rate_hz < want * 0.9;
+  return [fixed(r.rate_hz, 1), want ? h("span", { class: "muted" }, ` / ${want}`) : null, low ? h("span", { class: "chip warn" }, " low") : null];
+}
+// fault check of the value shown in the Calibrated column (the raw volts of an analog channel without calibration); needs both limits
+function faultCell(ch, r) {
+  if (!ch) return "";
+  if (ch.fault_low == null || ch.fault_high == null) return h("span", { class: "muted" }, "OK (no fault limit)");
+  if (r.stale) return h("span", { class: "muted" }, "—");
+  const v = evalCal(ch, r.value);
+  if (v < ch.fault_low) return h("span", { class: "chip bad" }, `FAULT low (< ${ch.fault_low})`);
+  if (v > ch.fault_high) return h("span", { class: "chip bad" }, `FAULT high (> ${ch.fault_high})`);
+  return h("span", { class: "chip ok" }, "OK");
 }
 function devLiveBody() {
   if (!dev.live) return h("span", { class: "muted" }, "Press Start to poll values.");
   if (dev.live.device_type === "hub") return devHubLiveBody();
-  return liveTable([["Channel", 230], ["Value", 260], ["Calibrated", 120], ["Units", 80], ["Status", 80]], dev.live.channels.map(r => {
+  return liveTable([["Channel", 230], ["Value", 130], ["Calibrated", 120], ["Units", 80], ["Rate (Hz)", 150], ["Fault", 150], ["Status", 80]], dev.live.channels.map(r => {
     const ch = P.channels.find(c => c.channel_id === r.channel_id);
     return h("tr", {}, h("td", {}, ch ? ch.name : `#${r.channel_id}`), h("td", { class: "num" }, valueCell(ch, r.value, r.stale)),
-      h("td", { class: "num" }, ch && !r.stale ? fixed(evalCal(ch, r.value), 3) : "—"), h("td", {}, ch ? ch.units : ""),
+      h("td", { class: "num" }, ch ? calCell(ch, r.value, r.stale) : ""), h("td", {}, ch ? calUnit(ch) : ""),
+      h("td", { class: "num" }, rateCell(ch, r)),
+      h("td", {}, faultCell(ch, r)),
       h("td", {}, r.stale ? h("span", { class: "chip warn" }, "stale") : h("span", { class: "chip ok" }, "live")));
   }));
 }

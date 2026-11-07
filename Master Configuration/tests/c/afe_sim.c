@@ -188,12 +188,12 @@ int main(int argc, char **argv)
         CHECK(LIVE_SENSOR_DATA[slot] == (uint32_t)(0x100 + i), "A sample %d -> slot %d = %X", i, slot, LIVE_SENSOR_DATA[slot]);
     }
 
-    /* ---- B: CS_B, 0x800000 is the most negative code -------------------------------------------------------------- */
+    /* ---- B: CS_B, the most negative code 0x800000 is reported as -8388607 (-8388608 means "no sample" on the bus) ---- */
     drdy(1);
     CHECK(dma_active && dma_afe == 1 && cs_low_b && !cs_low_a, "B DRDY must assert CS_B only");
     CHECK(sniff_last_tx_id == 1, "sniff TX id for B is %d", sniff_last_tx_id);
     dma_complete(-8388608);
-    CHECK(LIVE_SENSOR_DATA[6] == 0xFF800000u, "B channel 0 (slot 6) = %08X", LIVE_SENSOR_DATA[6]);
+    CHECK(LIVE_SENSOR_DATA[6] == 0xFF800001u, "B channel 0 (slot 6) = %08X", LIVE_SENSOR_DATA[6]);
     CHECK(st->samples[0] == 17 && st->samples[1] == 1, "sample counters %u %u", st->samples[0], st->samples[1]);
 
     /* ---- both DRDYs at once: the second waits, then starts from the completion; repeated edge = overrun ------------- */

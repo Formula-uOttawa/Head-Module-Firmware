@@ -34,7 +34,8 @@ typedef enum {
 #define HPROTO_CLEAR_REVERT 0x01u
 #define HPROTO_CHUNK_MAX 240u
 #define HPROTO_READ_MAX 232u   /* CFG_READ data bytes per reply (reply payload = 8 + data) */
-#define HPROTO_LIVE_MAX 48u    /* LIVE_GET entries per reply (reply payload = 4 + 5 * entries) */
+#define HPROTO_LIVE_ENTRY 7u   /* LIVE_GET entry: u32 value, u8 flags (bit0 stale), u16 reception rate in 0.1 Hz */
+#define HPROTO_LIVE_MAX 32u    /* LIVE_GET entries per reply (reply payload = 4 + 7 * entries) */
 #define HPROTO_INFO_BASE_LEN 48u /* INFO payload up to and including fdcan_kernel_hz (offsets never change) */
 #define HPROTO_INFO_LEN 80u      /* INFO payload: base 48 + 32 appended bytes (see Hproto_Handle) */
 #define HPROTO_MIN_RESP 64u   /* smallest response buffer Hproto_Handle accepts (INFO then returns only its first 48 bytes; the full INFO needs 2 + 80) */
@@ -119,7 +120,7 @@ uint16_t Hproto_EncodeStats(const HeadStats_t *st, uint8_t nbus, uint8_t *dst, u
 /*
  * Handle one message (msg = type, seq, payload). Writes the response message (same layout) into resp and returns
  * its length, or 0 if there is nothing to send. After a response to REBOOT is sent, Hproto_TakeReboot() is true.
- * resp_cap must be at least HPROTO_MIN_RESP; replies are clamped to it (CFG_READ data to cap - 10, LIVE_GET entries to (cap - 6) / 5).
+ * resp_cap must be at least HPROTO_MIN_RESP; replies are clamped to it (CFG_READ data to cap - 10, LIVE_GET entries to (cap - 6) / 7).
  */
 size_t Hproto_Handle(Hproto_t *p, const uint8_t *msg, size_t len, uint8_t *resp, size_t resp_cap);
 bool Hproto_TakeReboot(Hproto_t *p);

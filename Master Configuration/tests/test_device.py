@@ -173,6 +173,7 @@ def test_live_stats_sniff(dev):
     c, _, sniffs = dev
     live = c.live(2, 3)
     assert live["first"] == 2 and live["raw"] == [2007, 3007, 4007] and live["stale"] == [False, True, False]
+    assert live["rate_hz"] == [2.5, 3.5, 4.5]  # u16 in 0.1 Hz after each entry's flags byte
     st = c.stats()
     assert st["buses"][0] == {"rx_frames": 5, "rx_matched": 4, "rx_dropped": 1, "fifo_lost": 2, "bus_off": False, "error_passive": True}
     assert st["hub_lost"][0] == 9 and len(st["hub_lost"]) == 8

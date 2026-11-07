@@ -441,8 +441,19 @@ static uint8_t run_command(uint32_t cmd, uint32_t arg, uint32_t len, uint32_t cr
     }
 }
 
+/* The CM4 normally starts before the CM7 has raised the clocks (the boot sync define is off), so HAL_Init set SysTick for the
+   reset-default 64 MHz and the HAL tick then runs fast by (new HCLK / 64 MHz): every millisecond timer on this core, the
+   rate measurement included, would be wrong. Recompute the core clock from the RCC registers and re-arm SysTick when it changed. */
+static void sync_systick(void)
+{
+    SystemCoreClockUpdate();
+    if (SysTick->LOAD != SystemCoreClock / 1000u - 1u)
+        (void)HAL_InitTick(TICK_INT_PRIORITY);
+}
+
 void HeadCm4_Init(void)
 {
+    sync_systick();
     /* SRAM4 survives a reset, so the previous boot's magic may still be there: invalidate it first, set it last. The stage
        (CM7-owned upload buffer) is not touched. SRAM4 has no clock gate on the dual-core H745 (no SRAM4EN bit). */
     SH->magic = 0;
@@ -640,9 +651,11 @@ void HeadCm4_Poll(void)
     if ((uint32_t)(now - s_last_stale_ms) >= STALE_PERIOD_MS) {
         s_last_stale_ms = now;
         HeadDecode_UpdateStale(g_cfg, &SH->live, now);
+        HeadDecode_UpdateRates(&SH->live, now);
     }
     if ((uint32_t)(now - s_last_slow_ms) >= SLOW_PERIOD_MS) {
         s_last_slow_ms = now;
+        sync_systick(); /* the CM7 may still have been configuring the clocks at init */
         const HeadConfig_t *c = g_cfg;
         for (uint32_t b = 0; b < c->bus_count; b++) {
             FDCAN_HandleTypeDef *h = periph_handle(c->buses[b].peripheral);

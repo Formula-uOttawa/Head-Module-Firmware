@@ -9,7 +9,11 @@ void HeadDecode_Reset(HeadLive_t *live, HeadStats_t *stats)
         live->last_rx_ms[i] = 0;
         live->rx_seen[i] = 0;
         live->stale[i] = 1;
+        live->rx_count[i] = 0;
+        live->rate_x10[i] = 0;
+        live->rate_base[i] = 0;
     }
+    live->rate_window_ms = 0;
     if (stats) {
         memset((void *)stats, 0, sizeof *stats);
         for (uint32_t i = 0; i < HEAD_MAX_HUBS; i++)
@@ -47,6 +51,7 @@ static void mark_rx(HeadLive_t *live, uint16_t slot, uint32_t now_ms)
 {
     live->last_rx_ms[slot] = now_ms;
     live->rx_seen[slot] = 1;
+    live->rx_count[slot]++;
 }
 
 static bool process_hub(const HeadConfig_t *cfg, HeadLive_t *live, HeadStats_t *stats, uint32_t can_id,
@@ -171,4 +176,18 @@ void HeadDecode_UpdateStale(const HeadConfig_t *cfg, HeadLive_t *live, uint32_t 
         }
         live->stale[i] = stale;
     }
+}
+
+void HeadDecode_UpdateRates(HeadLive_t *live, uint32_t now_ms)
+{
+    uint32_t elapsed = now_ms - live->rate_window_ms;
+    if (elapsed < HEAD_RATE_WINDOW_MS)
+        return;
+    for (uint32_t i = 0; i < HEAD_MAX_CHANNELS; i++) {
+        uint32_t c = live->rx_count[i];
+        uint64_t r = (uint64_t)(c - live->rate_base[i]) * 10000u / elapsed; /* frames per ms * 10000 = 0.1 Hz */
+        live->rate_x10[i] = r > 0xFFFFu ? 0xFFFFu : (uint16_t)r;
+        live->rate_base[i] = c;
+    }
+    live->rate_window_ms = now_ms;
 }
